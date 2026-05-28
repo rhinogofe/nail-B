@@ -65,6 +65,8 @@ async function ensureSchema() {
       price NUMERIC(10, 2) NOT NULL DEFAULT 0,
       duration_min INT NOT NULL DEFAULT 60,
       is_active BOOLEAN NOT NULL DEFAULT true,
+      show_from_date DATE,
+      show_to_date DATE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -93,6 +95,11 @@ async function ensureSchema() {
 
     CREATE UNIQUE INDEX IF NOT EXISTS ux_coupons_coupon_code
       ON coupons (coupon_code);
+  `)
+
+  await pool.query(`
+    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_from_date DATE;
+    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_to_date DATE;
   `)
 
   await pool.query(`

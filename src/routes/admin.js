@@ -428,11 +428,28 @@ router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
 
 // ─── Nailoption CRUD ───────────────────────────────────────────
 
+function parseOptionalDate(value) {
+  if (value == null || value === '') return null
+  const date = String(value).trim().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { error: 'รูปแบบวันที่ไม่ถูกต้อง (YYYY-MM-DD)' }
+  }
+  return date
+}
+
+function validateShowDateRange(showFrom, showTo) {
+  if (showFrom && showTo && showFrom > showTo) {
+    return { error: 'วันเริ่มแสดงต้องไม่เกินวันสิ้นสุดแสดง' }
+  }
+  return null
+}
+
 router.get('/nailoptions', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
     const result = await pool.query(`
-      SELECT id, option_name, description, price, duration_min, is_active, created_at, updated_at
+      SELECT id, option_name, description, price, duration_min, is_active,
+             show_from_date, show_to_date, created_at, updated_at
       FROM nailoption
       ORDER BY option_name ASC
     `)
@@ -448,6 +465,8 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
   const price = Number(req.body?.price)
   const duration_min = Number(req.body?.duration_min)
   const is_active = req.body?.is_active !== false
+  const showFromParsed = parseOptionalDate(req.body?.show_from_date)
+  const showToParsed = parseOptionalDate(req.body?.show_to_date)
 
   if (!option_name) return res.status(400).json({ error: 'กรุณาระบุชื่อบริการ' })
   if (!Number.isFinite(price) || price < 0) {
@@ -456,16 +475,24 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
   if (!Number.isFinite(duration_min) || duration_min <= 0) {
     return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องมากกว่า 0' })
   }
+  if (showFromParsed?.error) return res.status(400).json({ error: showFromParsed.error })
+  if (showToParsed?.error) return res.status(400).json({ error: showToParsed.error })
+  const rangeError = validateShowDateRange(showFromParsed, showToParsed)
+  if (rangeError) return res.status(400).json(rangeError)
 
   try {
     const pool = getPool()
     const result = await pool.query(
       `
-        INSERT INTO nailoption (option_name, description, price, duration_min, is_active)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, option_name, description, price, duration_min, is_active, created_at, updated_at
+        INSERT INTO nailoption (
+          option_name, description, price, duration_min, is_active,
+          show_from_date, show_to_date
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, option_name, description, price, duration_min, is_active,
+                  show_from_date, show_to_date, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active]
+      [option_name, description, price, duration_min, is_active, showFromParsed, showToParsed]
     )
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
@@ -482,6 +509,8 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
   const price = Number(req.body?.price)
   const duration_min = Number(req.body?.duration_min)
   const is_active = Boolean(req.body?.is_active)
+  const showFromParsed = parseOptionalDate(req.body?.show_from_date)
+  const showToParsed = parseOptionalDate(req.body?.show_to_date)
 
   if (!option_name) return res.status(400).json({ error: 'กรุณาระบุชื่อบริการ' })
   if (!Number.isFinite(price) || price < 0) {
@@ -490,6 +519,10 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
   if (!Number.isFinite(duration_min) || duration_min <= 0) {
     return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องมากกว่า 0' })
   }
+  if (showFromParsed?.error) return res.status(400).json({ error: showFromParsed.error })
+  if (showToParsed?.error) return res.status(400).json({ error: showToParsed.error })
+  const rangeError = validateShowDateRange(showFromParsed, showToParsed)
+  if (rangeError) return res.status(400).json(rangeError)
 
   try {
     const pool = getPool()
@@ -502,11 +535,14 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
           price = $3,
           duration_min = $4,
           is_active = $5,
+          show_from_date = $6,
+          show_to_date = $7,
           updated_at = NOW()
-        WHERE id = $6
-        RETURNING id, option_name, description, price, duration_min, is_active, created_at, updated_at
+        WHERE id = $8
+        RETURNING id, option_name, description, price, duration_min, is_active,
+                  show_from_date, show_to_date, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, req.params.id]
+      [option_name, description, price, duration_min, is_active, showFromParsed, showToParsed, req.params.id]
     )
 
     if (result.rowCount === 0) {

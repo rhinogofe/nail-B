@@ -20,11 +20,19 @@ async function syncBookingOptions(pool, bookingId, optionIds) {
   )
 }
 
-async function validateOptionIds(pool, optionIds) {
+async function validateOptionIds(pool, optionIds, bookingDate) {
   const placeholders = optionIds.map((_, idx) => `$${idx + 1}`).join(', ')
+  const dateParam = bookingDate ? `$${optionIds.length + 1}` : null
+  const dateFilter = bookingDate
+    ? `
+      AND (show_from_date IS NULL OR show_from_date <= ${dateParam})
+      AND (show_to_date IS NULL OR show_to_date >= ${dateParam})
+    `
+    : ''
+  const params = bookingDate ? [...optionIds, bookingDate] : optionIds
   const result = await pool.query(
-    `SELECT id FROM nailoption WHERE is_active = true AND id IN (${placeholders})`,
-    optionIds
+    `SELECT id FROM nailoption WHERE is_active = true AND id IN (${placeholders}) ${dateFilter}`,
+    params
   )
   return result.rows.length === optionIds.length
 }
@@ -43,17 +51,37 @@ router.get('/deposit-setting', auth, async (req, res) => {
 })
 
 router.get('/options', auth, async (req, res) => {
+  const { date } = req.query
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+    return res.status(400).json({ error: 'date ต้องเป็น YYYY-MM-DD' })
+  }
+
   try {
     const pool = getPool()
-    const result = await pool.query(`
-      SELECT id, option_name, description, price, duration_min, is_active
-      FROM nailoption
-      WHERE is_active = true
-      ORDER BY
-        CASE WHEN description IS NULL OR TRIM(description) = '' THEN 1 ELSE 0 END,
-        description ASC,
-        option_name ASC
-    `)
+    const params = []
+    let dateFilter = ''
+    if (date) {
+      params.push(String(date))
+      dateFilter = `
+        AND (show_from_date IS NULL OR show_from_date <= $${params.length})
+        AND (show_to_date IS NULL OR show_to_date >= $${params.length})
+      `
+    }
+
+    const result = await pool.query(
+      `
+        SELECT id, option_name, description, price, duration_min, is_active,
+               show_from_date, show_to_date
+        FROM nailoption
+        WHERE is_active = true
+        ${dateFilter}
+        ORDER BY
+          CASE WHEN description IS NULL OR TRIM(description) = '' THEN 1 ELSE 0 END,
+          description ASC,
+          option_name ASC
+      `,
+      params
+    )
     res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -139,7 +167,7 @@ router.post('/', auth, async (req, res) => {
   try {
     const pool = getPool()
     const uniqueOptionIds = [...new Set(option_ids)]
-    const isValidOptions = await validateOptionIds(pool, uniqueOptionIds)
+    const isValidOptions = await validateOptionIds(pool, uniqueOptionIds, booking_date)
     if (!isValidOptions) {
       return res.status(400).json({ error: 'รายการบริการที่เลือกไม่ถูกต้อง' })
     }
