@@ -114,6 +114,32 @@ router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
   }
 })
 
+router.patch('/bookings/:id/cancel-paid', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        UPDATE bookings
+        SET status = 'cancelled'
+        WHERE id = $1
+          AND status = 'pending'
+      `,
+      [req.params.id]
+    )
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบคิวที่ชำระแล้วให้ยกเลิก' })
+    }
+
+    res.json({
+      success: true,
+      message: 'ยกเลิกคิวชำระแล้วแล้ว ช่วงเวลานี้ว่างให้จองใหม่ได้',
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/blocks', auth, admin, async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7)
   const [y, m] = month.split('-').map(Number)
