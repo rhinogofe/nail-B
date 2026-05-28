@@ -3,6 +3,23 @@ const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
 const { getPool, withTransaction } = require('../db/pool')
 
+function addDaysYmd(ymd, days) {
+  const [y, m, d] = ymd.split('-').map(Number)
+  const dt = new Date(y, m - 1, d)
+  dt.setDate(dt.getDate() + days)
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
+
+function buildDateRange(startDate, dayCount) {
+  const dates = []
+  let current = startDate
+  for (let i = 0; i < dayCount; i += 1) {
+    dates.push(current)
+    current = addDaysYmd(current, 1)
+  }
+  return dates
+}
+
 router.get('/bookings', auth, admin, async (req, res) => {
   const { date, status } = req.query
   try {
@@ -153,6 +170,87 @@ router.post('/blocks', auth, admin, async (req, res) => {
       ]
     )
     res.status(201).json({ success: true, block: result.rows[0] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/blocks/bulk', auth, admin, async (req, res) => {
+  const { start_date, days, is_full_day, start_hour, end_hour, note } = req.body
+  const dayCount = Number(days)
+
+  if (!start_date) return res.status(400).json({ error: 'ต้องระบุ start_date' })
+  if (!Number.isInteger(dayCount) || dayCount < 1 || dayCount > 90) {
+    return res.status(400).json({ error: 'days ต้องอยู่ระหว่าง 1-90' })
+  }
+  if (!is_full_day) {
+    if (start_hour == null || end_hour == null) {
+      return res.status(400).json({ error: 'ต้องระบุ start_hour และ end_hour' })
+    }
+    if (start_hour < 0 || end_hour > 24 || end_hour <= start_hour) {
+      return res.status(400).json({ error: 'ช่วงเวลาปิดไม่ถูกต้อง' })
+    }
+  }
+
+  const dates = buildDateRange(start_date, dayCount)
+  const fullDay = Boolean(is_full_day)
+  const startH = fullDay ? null : start_hour
+  const endH = fullDay ? null : end_hour
+  const blockNote = note || null
+
+  try {
+    const result = await withTransaction(async (client) => {
+      let created = 0
+      let skipped = 0
+
+      for (const blockDate of dates) {
+        if (fullDay) {
+          const exists = await client.query(
+            `SELECT 1 FROM booking_blocks WHERE block_date = $1 AND is_full_day = true LIMIT 1`,
+            [blockDate]
+          )
+          if (exists.rows.length > 0) {
+            skipped += 1
+            continue
+          }
+        } else {
+          const exists = await client.query(
+            `
+              SELECT 1 FROM booking_blocks
+              WHERE block_date = $1
+                AND (
+                  is_full_day = true
+                  OR (is_full_day = false AND start_hour = $2 AND end_hour = $3)
+                )
+              LIMIT 1
+            `,
+            [blockDate, startH, endH]
+          )
+          if (exists.rows.length > 0) {
+            skipped += 1
+            continue
+          }
+        }
+
+        await client.query(
+          `
+            INSERT INTO booking_blocks (block_date, start_hour, end_hour, is_full_day, note)
+            VALUES ($1, $2, $3, $4, $5)
+          `,
+          [blockDate, startH, endH, fullDay, blockNote]
+        )
+        created += 1
+      }
+
+      return { created, skipped, total: dates.length, end_date: dates[dates.length - 1] }
+    })
+
+    const skipHint = fullDay ? 'วันที่ปิดทั้งวันอยู่แล้ว' : 'วันที่มีช่วงเวลานี้หรือปิดทั้งวันอยู่แล้ว'
+    res.status(201).json({
+      success: true,
+      message: `ปิดรับคิวแล้ว ${result.created} วัน (ข้าม ${result.skipped} วัน — ${skipHint})`,
+      ...result,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -324,6 +422,122 @@ router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
     await pool.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
     res.json({ success: true })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Nailoption CRUD ───────────────────────────────────────────
+
+router.get('/nailoptions', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(`
+      SELECT id, option_name, description, price, duration_min, is_active, created_at, updated_at
+      FROM nailoption
+      ORDER BY option_name ASC
+    `)
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/nailoptions', auth, admin, async (req, res) => {
+  const option_name = String(req.body?.option_name || '').trim()
+  const description = String(req.body?.description || '').trim() || null
+  const price = Number(req.body?.price)
+  const duration_min = Number(req.body?.duration_min)
+  const is_active = req.body?.is_active !== false
+
+  if (!option_name) return res.status(400).json({ error: 'กรุณาระบุชื่อบริการ' })
+  if (!Number.isFinite(price) || price < 0) {
+    return res.status(400).json({ error: 'ราคาไม่ถูกต้อง' })
+  }
+  if (!Number.isFinite(duration_min) || duration_min <= 0) {
+    return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องมากกว่า 0' })
+  }
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        INSERT INTO nailoption (option_name, description, price, duration_min, is_active)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, option_name, description, price, duration_min, is_active, created_at, updated_at
+      `,
+      [option_name, description, price, duration_min, is_active]
+    )
+    res.status(201).json({ success: true, option: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อบริการซ้ำ กรุณาใช้ชื่ออื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
+  const option_name = String(req.body?.option_name || '').trim()
+  const description = String(req.body?.description || '').trim() || null
+  const price = Number(req.body?.price)
+  const duration_min = Number(req.body?.duration_min)
+  const is_active = Boolean(req.body?.is_active)
+
+  if (!option_name) return res.status(400).json({ error: 'กรุณาระบุชื่อบริการ' })
+  if (!Number.isFinite(price) || price < 0) {
+    return res.status(400).json({ error: 'ราคาไม่ถูกต้อง' })
+  }
+  if (!Number.isFinite(duration_min) || duration_min <= 0) {
+    return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องมากกว่า 0' })
+  }
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        UPDATE nailoption
+        SET
+          option_name = $1,
+          description = $2,
+          price = $3,
+          duration_min = $4,
+          is_active = $5,
+          updated_at = NOW()
+        WHERE id = $6
+        RETURNING id, option_name, description, price, duration_min, is_active, created_at, updated_at
+      `,
+      [option_name, description, price, duration_min, is_active, req.params.id]
+    )
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบรายการบริการ' })
+    }
+
+    res.json({ success: true, option: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อบริการซ้ำ กรุณาใช้ชื่ออื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(`DELETE FROM nailoption WHERE id = $1`, [req.params.id])
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบรายการบริการ' })
+    }
+
+    res.json({ success: true, message: 'ลบรายการบริการแล้ว' })
+  } catch (err) {
+    if (err.code === '23503') {
+      return res.status(409).json({
+        error: 'บริการนี้ถูกใช้ในคิวจองแล้ว ให้ปิดการใช้งาน (ไม่แสดง) แทนการลบ',
+      })
+    }
     res.status(500).json({ error: err.message })
   }
 })

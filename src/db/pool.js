@@ -1,4 +1,7 @@
-const { Pool } = require('pg')
+const { Pool, types } = require('pg')
+
+// Keep DATE columns as YYYY-MM-DD strings so JSON responses do not shift by timezone.
+types.setTypeParser(types.builtins.DATE, (value) => value)
 
 function buildConfig() {
   if (process.env.DATABASE_URL) {

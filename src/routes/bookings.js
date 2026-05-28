@@ -195,17 +195,25 @@ router.post('/', auth, async (req, res) => {
     )
 
     if (reused.rows.length > 0) {
+      await pool.query(
+        `UPDATE bookings SET end_hour = $1 WHERE id = $2 AND end_hour IS NULL`,
+        [start_hour + 2, reused.rows[0].id]
+      )
       await syncBookingOptions(pool, reused.rows[0].id, uniqueOptionIds)
-      return res.status(201).json({ success: true, booking: reused.rows[0] })
+      const updated = await pool.query(
+        `SELECT id, booking_date, start_hour, end_hour, status FROM bookings WHERE id = $1`,
+        [reused.rows[0].id]
+      )
+      return res.status(201).json({ success: true, booking: updated.rows[0] })
     }
 
     const result = await pool.query(
       `
-        INSERT INTO bookings (user_id, booking_date, start_hour, status)
-        VALUES ($1, $2, $3, 'awaiting_payment')
+        INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status)
+        VALUES ($1, $2, $3, $4, 'awaiting_payment')
         RETURNING id, booking_date, start_hour, end_hour, status
       `,
-      [req.user.id, booking_date, start_hour]
+      [req.user.id, booking_date, start_hour, start_hour + 2]
     )
     await syncBookingOptions(pool, result.rows[0].id, uniqueOptionIds)
     res.status(201).json({ success: true, booking: result.rows[0] })
