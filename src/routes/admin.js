@@ -1,68 +1,61 @@
 const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
-const { sql, getPool } = require('../db/pool')
+const { getPool, withTransaction } = require('../db/pool')
 
-// ─── GET /api/admin/bookings ──────────────────────────────────
-// ดูคิวทั้งหมด (กรองตาม date หรือ status ได้)
 router.get('/bookings', auth, admin, async (req, res) => {
   const { date, status } = req.query
   try {
-    const pool = await getPool()
-    const req2 = pool.request()
-
+    const pool = getPool()
+    const params = []
     let where = 'WHERE 1=1'
+
     if (date) {
-      req2.input('date', sql.Date, date)
-      where += ' AND b.booking_date = @date'
+      params.push(date)
+      where += ` AND b.booking_date = $${params.length}`
     }
     if (status) {
-      req2.input('status', sql.NVarChar, status)
-      where += ' AND b.status = @status'
+      params.push(status)
+      where += ` AND b.status = $${params.length}`
     }
 
-    const result = await req2.query(`
-      SELECT
-        b.id,
-        b.booking_date,
-        b.start_hour,
-        b.end_hour,
-        b.status,
-        b.created_at,
-        b.completed_at,
-        u.id         AS user_id,
-        u.name       AS user_name,
-        u.email      AS user_email,
-        u.avatar_url AS user_avatar,
-        u.total_points
-      FROM bookings b
-      JOIN users u ON u.id = b.user_id
-      ${where}
-      ORDER BY b.booking_date ASC, b.start_hour ASC
-    `)
+    const result = await pool.query(
+      `
+        SELECT
+          b.id,
+          b.booking_date,
+          b.start_hour,
+          b.end_hour,
+          b.status,
+          b.created_at,
+          b.completed_at,
+          u.id         AS user_id,
+          u.name       AS user_name,
+          u.email      AS user_email,
+          u.avatar_url AS user_avatar,
+          u.total_points
+        FROM bookings b
+        JOIN users u ON u.id = b.user_id
+        ${where}
+        ORDER BY b.booking_date ASC, b.start_hour ASC
+      `,
+      params
+    )
 
-    const req3 = pool.request()
-    let where2 = 'WHERE 1=1'
-    if (date) {
-      req3.input('date', sql.Date, date)
-      where2 += ' AND b.booking_date = @date'
-    }
-    if (status) {
-      req3.input('status', sql.NVarChar, status)
-      where2 += ' AND b.status = @status'
-    }
-
-    const optionsResult = await req3.query(`
-      SELECT b.id AS booking_id, n.id AS option_id, n.option_name
-      FROM bookings b
-      JOIN booking_nailoptions bn ON bn.booking_id = b.id
-      JOIN Nailoption n ON n.id = bn.nailoption_id
-      ${where2}
-      ORDER BY b.booking_date ASC, b.start_hour ASC, n.option_name ASC
-    `)
+    const optionsResult = await pool.query(
+      `
+        SELECT b.id AS booking_id, n.id AS option_id, n.option_name
+        FROM bookings b
+        JOIN booking_nailoptions bn ON bn.booking_id = b.id
+        JOIN nailoption n ON n.id = bn.nailoption_id
+        ${where}
+        ORDER BY b.booking_date ASC, b.start_hour ASC, n.option_name ASC
+      `,
+      params
+    )
 
     const optionsByBookingId = {}
-    for (const row of optionsResult.recordset) {
+    for (const row of optionsResult.rows) {
       if (!optionsByBookingId[row.booking_id]) optionsByBookingId[row.booking_id] = []
       optionsByBookingId[row.booking_id].push({
         id: row.option_id,
@@ -70,7 +63,7 @@ router.get('/bookings', auth, admin, async (req, res) => {
       })
     }
 
-    const payload = result.recordset.map((item) => ({
+    const payload = result.rows.map((item) => ({
       ...item,
       nail_options: optionsByBookingId[item.id] || [],
     }))
@@ -81,21 +74,20 @@ router.get('/bookings', auth, admin, async (req, res) => {
   }
 })
 
-// ─── PATCH /api/admin/bookings/:id/cancel-unpaid ───────────────
-// ยกเลิกคิวที่ยังไม่ชำระเงิน
 router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`
+    const pool = getPool()
+    const result = await pool.query(
+      `
         UPDATE bookings
         SET status = 'cancelled'
-        WHERE id = @id
+        WHERE id = $1
           AND status = 'awaiting_payment'
-      `)
+      `,
+      [req.params.id]
+    )
 
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบคิวที่รอชำระเงินให้ยกเลิก' })
     }
 
@@ -105,7 +97,6 @@ router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
   }
 })
 
-// ─── GET /api/admin/blocks?month=YYYY-MM ───────────────────────
 router.get('/blocks', auth, admin, async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7)
   const [y, m] = month.split('-').map(Number)
@@ -117,23 +108,22 @@ router.get('/blocks', auth, admin, async (req, res) => {
   const to = `${toDate.getFullYear()}-${String(toDate.getMonth() + 1).padStart(2, '0')}-${String(toDate.getDate()).padStart(2, '0')}`
 
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('fromDate', sql.Date, from)
-      .input('toDate', sql.Date, to)
-      .query(`
+    const pool = getPool()
+    const result = await pool.query(
+      `
         SELECT id, block_date, start_hour, end_hour, is_full_day, note, created_at
         FROM booking_blocks
-        WHERE block_date BETWEEN @fromDate AND @toDate
+        WHERE block_date BETWEEN $1 AND $2
         ORDER BY block_date ASC, is_full_day DESC, start_hour ASC
-      `)
-    res.json(result.recordset)
+      `,
+      [from, to]
+    )
+    res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── POST /api/admin/blocks ─────────────────────────────────────
 router.post('/blocks', auth, admin, async (req, res) => {
   const { block_date, is_full_day, start_hour, end_hour, note } = req.body
   if (!block_date) return res.status(400).json({ error: 'ต้องระบุ block_date' })
@@ -147,33 +137,33 @@ router.post('/blocks', auth, admin, async (req, res) => {
   }
 
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('blockDate', sql.Date, block_date)
-      .input('isFullDay', sql.Bit, is_full_day ? 1 : 0)
-      .input('startHour', sql.TinyInt, is_full_day ? null : start_hour)
-      .input('endHour', sql.TinyInt, is_full_day ? null : end_hour)
-      .input('note', sql.NVarChar(255), note || null)
-      .query(`
+    const pool = getPool()
+    const result = await pool.query(
+      `
         INSERT INTO booking_blocks (block_date, start_hour, end_hour, is_full_day, note)
-        OUTPUT INSERTED.id, INSERTED.block_date, INSERTED.start_hour, INSERTED.end_hour, INSERTED.is_full_day, INSERTED.note, INSERTED.created_at
-        VALUES (@blockDate, @startHour, @endHour, @isFullDay, @note)
-      `)
-    res.status(201).json({ success: true, block: result.recordset[0] })
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, block_date, start_hour, end_hour, is_full_day, note, created_at
+      `,
+      [
+        block_date,
+        is_full_day ? null : start_hour,
+        is_full_day ? null : end_hour,
+        Boolean(is_full_day),
+        note || null,
+      ]
+    )
+    res.status(201).json({ success: true, block: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── DELETE /api/admin/blocks/:id ──────────────────────────────
 router.delete('/blocks/:id', auth, admin, async (req, res) => {
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`DELETE FROM booking_blocks WHERE id = @id`)
+    const pool = getPool()
+    const result = await pool.query(`DELETE FROM booking_blocks WHERE id = $1`, [req.params.id])
 
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการปิดวันเวลา' })
     }
     res.json({ success: true })
@@ -182,20 +172,19 @@ router.delete('/blocks/:id', auth, admin, async (req, res) => {
   }
 })
 
-// ─── GET /api/admin/settings/deposit ────────────────────────────
 router.get('/settings/deposit', auth, admin, async (req, res) => {
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .query(`SELECT setting_value FROM app_settings WHERE setting_key='deposit_amount'`)
-    const value = result.recordset[0]?.setting_value || '300'
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT setting_value FROM app_settings WHERE setting_key = 'deposit_amount'`
+    )
+    const value = result.rows[0]?.setting_value || '300'
     res.json({ deposit_amount: Number(value) || 300 })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── PATCH /api/admin/settings/deposit ──────────────────────────
 router.patch('/settings/deposit', auth, admin, async (req, res) => {
   const amount = Number(req.body?.deposit_amount)
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -203,21 +192,21 @@ router.patch('/settings/deposit', auth, admin, async (req, res) => {
   }
 
   try {
-    const pool = await getPool()
-    await pool.request()
-      .input('value', sql.NVarChar(255), String(amount))
-      .query(`
+    const pool = getPool()
+    await pool.query(
+      `
         UPDATE app_settings
-        SET setting_value = @value, updated_at = SYSDATETIME()
+        SET setting_value = $1, updated_at = NOW()
         WHERE setting_key = 'deposit_amount'
-      `)
+      `,
+      [String(amount)]
+    )
     res.json({ success: true, deposit_amount: amount })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── PATCH /api/admin/coupons/use ───────────────────────────────
 router.patch('/coupons/use', auth, admin, async (req, res) => {
   const couponCode = String(req.body?.coupon_code || '').trim().toUpperCase()
   if (!couponCode) {
@@ -225,42 +214,42 @@ router.patch('/coupons/use', auth, admin, async (req, res) => {
   }
 
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('code', sql.NVarChar, couponCode)
-      .query(`
+    const pool = getPool()
+    const result = await pool.query(
+      `
         UPDATE coupons
-        SET is_used = 1, used_at = SYSDATETIME()
-        OUTPUT INSERTED.id, INSERTED.coupon_code, INSERTED.discount_percent, INSERTED.user_id
-        WHERE coupon_code = @code
-          AND is_used = 0
-      `)
+        SET is_used = true, used_at = NOW()
+        WHERE coupon_code = $1
+          AND is_used = false
+        RETURNING id, coupon_code, discount_percent, user_id
+      `,
+      [couponCode]
+    )
 
-    if (!result.recordset[0]) {
+    if (!result.rows[0]) {
       return res.status(404).json({ error: 'ไม่พบคูปอง หรือคูปองถูกใช้ไปแล้ว' })
     }
 
-    res.json({ success: true, message: 'ใช้คูปองเรียบร้อยแล้ว', coupon: result.recordset[0] })
+    res.json({ success: true, message: 'ใช้คูปองเรียบร้อยแล้ว', coupon: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── PATCH /api/admin/bookings/:id/confirm-payment ─────────────
-// ยืนยันสลิปแล้ว -> เปลี่ยนจาก awaiting_payment เป็น pending
 router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`
+    const pool = getPool()
+    const result = await pool.query(
+      `
         UPDATE bookings
         SET status = 'pending'
-        WHERE id = @id
+        WHERE id = $1
           AND status = 'awaiting_payment'
-      `)
+      `,
+      [req.params.id]
+    )
 
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบคิวที่รอยืนยันชำระเงิน' })
     }
 
@@ -270,90 +259,69 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
   }
 })
 
-// ─── PATCH /api/admin/bookings/:id/complete ───────────────────
-// แอดมินกดเสร็จ → เปลี่ยน status + บวก 10 คะแนนให้ลูกค้า (transaction)
 router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
-  const pool = await getPool()
-
-  const transaction = new (require('mssql').Transaction)(pool)
   try {
-    await transaction.begin()
-    const req2 = new (require('mssql').Request)(transaction)
+    await withTransaction(async (client) => {
+      const found = await client.query(
+        `SELECT * FROM bookings WHERE id = $1 AND status = 'pending'`,
+        [req.params.id]
+      )
+      if (!found.rows[0]) {
+        const err = new Error('ไม่พบคิว หรือทำเสร็จแล้ว')
+        err.status = 404
+        throw err
+      }
+      const booking = found.rows[0]
 
-    // ดึงคิว
-    req2.input('id', sql.UniqueIdentifier, req.params.id)
-    const found = await req2.query(
-      `SELECT * FROM bookings WHERE id=@id AND status='pending'`
-    )
-    if (!found.recordset[0]) {
-      await transaction.rollback()
-      return res.status(404).json({ error: 'ไม่พบคิว หรือทำเสร็จแล้ว' })
-    }
-    const booking = found.recordset[0]
+      await client.query(
+        `UPDATE bookings SET status = 'done', completed_at = NOW() WHERE id = $1`,
+        [booking.id]
+      )
 
-    // อัปเดต booking → done
-    const req3 = new (require('mssql').Request)(transaction)
-    req3.input('id', sql.UniqueIdentifier, booking.id)
-    await req3.query(
-      `UPDATE bookings SET status='done', completed_at=GETDATE() WHERE id=@id`
-    )
+      await client.query(
+        `INSERT INTO point_logs (user_id, booking_id, points) VALUES ($1, $2, 10)`,
+        [booking.user_id, booking.id]
+      )
 
-    // เพิ่ม point_log
-    const req4 = new (require('mssql').Request)(transaction)
-    req4.input('userId',    sql.UniqueIdentifier, booking.user_id)
-    req4.input('bookingId', sql.UniqueIdentifier, booking.id)
-    await req4.query(
-      `INSERT INTO point_logs (user_id, booking_id, points) VALUES (@userId, @bookingId, 10)`
-    )
+      await client.query(
+        `UPDATE users SET total_points = total_points + 10 WHERE id = $1`,
+        [booking.user_id]
+      )
+    })
 
-    // บวก total_points ให้ user
-    const req5 = new (require('mssql').Request)(transaction)
-    req5.input('userId', sql.UniqueIdentifier, booking.user_id)
-    await req5.query(
-      `UPDATE users SET total_points = total_points + 10 WHERE id=@userId`
-    )
-
-    await transaction.commit()
     res.json({ success: true, message: 'เสร็จแล้ว! ลูกค้าได้รับ +10 คะแนน' })
   } catch (err) {
-    await transaction.rollback().catch(() => {})
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── GET /api/admin/users ─────────────────────────────────────
-// ดูรายชื่อลูกค้าและคะแนนทั้งหมด
 router.get('/users', auth, admin, async (req, res) => {
   try {
-    const pool = await getPool()
-    const result = await pool.request().query(`
+    const pool = getPool()
+    const result = await pool.query(`
       SELECT
         u.id, u.name, u.email, u.avatar_url, u.provider,
         u.total_points, u.created_at,
-        COUNT(b.id) AS total_bookings,
-        SUM(CASE WHEN b.status='done' THEN 1 ELSE 0 END) AS completed_bookings
+        COUNT(b.id)::int AS total_bookings,
+        SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings
       FROM users u
       LEFT JOIN bookings b ON b.user_id = u.id
-      WHERE u.is_admin = 0
+      WHERE u.is_admin = false
       GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.total_points, u.created_at
       ORDER BY u.total_points DESC
     `)
-    res.json(result.recordset)
+    res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// ─── PATCH /api/admin/users/:id/set-admin ────────────────────
-// ให้/ถอนสิทธิ์แอดมิน
 router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
   const { is_admin } = req.body
   try {
-    const pool = await getPool()
-    await pool.request()
-      .input('id',      sql.UniqueIdentifier, req.params.id)
-      .input('isAdmin', sql.Bit,              is_admin ? 1 : 0)
-      .query(`UPDATE users SET is_admin=@isAdmin WHERE id=@id`)
+    const pool = getPool()
+    await pool.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })

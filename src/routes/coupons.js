@@ -1,7 +1,7 @@
 const crypto = require('crypto')
 const router = require('express').Router()
 const auth = require('../middleware/authMiddleware')
-const { sql, getPool } = require('../db/pool')
+const { getPool, withTransaction } = require('../db/pool')
 
 const REQUIRED_POINTS = 100
 const DISCOUNT_PERCENT = 20
@@ -16,86 +16,79 @@ function generateCouponCode(length = 10) {
   return code
 }
 
-async function generateUniqueCode(pool) {
+async function generateUniqueCode(client) {
   for (let i = 0; i < 10; i += 1) {
     const code = generateCouponCode(10)
-    const found = await pool.request()
-      .input('code', sql.NVarChar, code)
-      .query(`SELECT TOP 1 id FROM coupons WHERE coupon_code = @code`)
-    if (!found.recordset[0]) return code
+    const found = await client.query(
+      `SELECT id FROM coupons WHERE coupon_code = $1 LIMIT 1`,
+      [code]
+    )
+    if (!found.rows[0]) return code
   }
   throw new Error('ไม่สามารถสร้างคูปองได้ กรุณาลองใหม่')
 }
 
 router.get('/my', auth, async (req, res) => {
   try {
-    const pool = await getPool()
-    const result = await pool.request()
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .query(`
+    const pool = getPool()
+    const result = await pool.query(
+      `
         SELECT id, coupon_code, discount_percent, required_points, is_used, used_at, created_at
         FROM coupons
-        WHERE user_id = @userId
+        WHERE user_id = $1
         ORDER BY created_at DESC
-      `)
-    res.json(result.recordset)
+      `,
+      [req.user.id]
+    )
+    res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
 router.post('/redeem', auth, async (req, res) => {
-  const pool = await getPool()
-  const transaction = new (require('mssql').Transaction)(pool)
-
   try {
-    await transaction.begin()
+    const coupon = await withTransaction(async (client) => {
+      const foundUser = await client.query(
+        `SELECT id, total_points FROM users WHERE id = $1 FOR UPDATE`,
+        [req.user.id]
+      )
 
-    const req1 = new (require('mssql').Request)(transaction)
-    req1.input('userId', sql.UniqueIdentifier, req.user.id)
-    const foundUser = await req1.query(`
-      SELECT id, total_points
-      FROM users WITH (UPDLOCK, ROWLOCK)
-      WHERE id = @userId
-    `)
+      const user = foundUser.rows[0]
+      if (!user) {
+        const err = new Error('ไม่พบผู้ใช้')
+        err.status = 404
+        throw err
+      }
 
-    const user = foundUser.recordset[0]
-    if (!user) {
-      await transaction.rollback()
-      return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
-    }
+      if (Number(user.total_points) < REQUIRED_POINTS) {
+        const err = new Error('แต้มไม่พอสำหรับแลกคูปอง')
+        err.status = 400
+        throw err
+      }
 
-    if (Number(user.total_points) < REQUIRED_POINTS) {
-      await transaction.rollback()
-      return res.status(400).json({ error: 'แต้มไม่พอสำหรับแลกคูปอง' })
-    }
+      const code = await generateUniqueCode(client)
 
-    const code = await generateUniqueCode(pool)
+      await client.query(
+        `UPDATE users SET total_points = total_points - $1 WHERE id = $2`,
+        [REQUIRED_POINTS, req.user.id]
+      )
 
-    const req2 = new (require('mssql').Request)(transaction)
-    req2.input('userId', sql.UniqueIdentifier, req.user.id)
-    req2.input('cost', sql.Int, REQUIRED_POINTS)
-    await req2.query(`
-      UPDATE users
-      SET total_points = total_points - @cost
-      WHERE id = @userId
-    `)
+      const created = await client.query(
+        `
+          INSERT INTO coupons (user_id, coupon_code, discount_percent, required_points)
+          VALUES ($1, $2, $3, $4)
+          RETURNING id, coupon_code, discount_percent, required_points, created_at
+        `,
+        [req.user.id, code, DISCOUNT_PERCENT, REQUIRED_POINTS]
+      )
 
-    const req3 = new (require('mssql').Request)(transaction)
-    req3.input('userId', sql.UniqueIdentifier, req.user.id)
-    req3.input('code', sql.NVarChar, code)
-    req3.input('discount', sql.Int, DISCOUNT_PERCENT)
-    req3.input('requiredPoints', sql.Int, REQUIRED_POINTS)
-    const created = await req3.query(`
-      INSERT INTO coupons (user_id, coupon_code, discount_percent, required_points)
-      OUTPUT INSERTED.id, INSERTED.coupon_code, INSERTED.discount_percent, INSERTED.required_points, INSERTED.created_at
-      VALUES (@userId, @code, @discount, @requiredPoints)
-    `)
+      return created.rows[0]
+    })
 
-    await transaction.commit()
-    res.status(201).json({ success: true, coupon: created.recordset[0] })
+    res.status(201).json({ success: true, coupon })
   } catch (err) {
-    await transaction.rollback().catch(() => {})
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })

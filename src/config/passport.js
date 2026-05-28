@@ -3,39 +3,32 @@ const GoogleStrategy   = require('passport-google-oauth20').Strategy
 const FacebookStrategy = require('passport-facebook').Strategy
 const LineStrategy     = require('passport-line').Strategy
 const jwt              = require('jsonwebtoken')
-const { sql, getPool } = require('../db/pool')
+const { getPool } = require('../db/pool')
 
 function hasEnv(...keys) {
   return keys.every((key) => Boolean(process.env[key]))
 }
 
-// ─── upsert user ─────────────────────────────────────────────
 async function findOrCreateUser({ provider, providerId, name, email, avatarUrl }) {
-  const pool = await getPool()
+  const pool = getPool()
 
-  const found = await pool.request()
-    .input('provider',   sql.NVarChar, provider)
-    .input('providerId', sql.NVarChar, providerId)
-    .query(`SELECT * FROM users WHERE provider=@provider AND provider_id=@providerId`)
+  const found = await pool.query(
+    `SELECT * FROM users WHERE provider = $1 AND provider_id = $2`,
+    [provider, providerId]
+  )
 
-  if (found.recordset.length > 0) return found.recordset[0]
+  if (found.rows.length > 0) return found.rows[0]
 
-  const created = await pool.request()
-    .input('name',       sql.NVarChar, name)
-    .input('email',      sql.NVarChar, email || `${providerId}@${provider}.local`)
-    .input('avatarUrl',  sql.NVarChar, avatarUrl || null)
-    .input('provider',   sql.NVarChar, provider)
-    .input('providerId', sql.NVarChar, providerId)
-    .query(`
-      INSERT INTO users (name, email, avatar_url, provider, provider_id)
-      OUTPUT INSERTED.*
-      VALUES (@name, @email, @avatarUrl, @provider, @providerId)
-    `)
+  const created = await pool.query(
+    `INSERT INTO users (name, email, avatar_url, provider, provider_id)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
+    [name, email || `${providerId}@${provider}.local`, avatarUrl || null, provider, providerId]
+  )
 
-  return created.recordset[0]
+  return created.rows[0]
 }
 
-// ─── Google ───────────────────────────────────────────────────
 if (hasEnv('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_CALLBACK_URL')) {
   passport.use(new GoogleStrategy({
     clientID:     process.env.GOOGLE_CLIENT_ID,
@@ -55,7 +48,6 @@ if (hasEnv('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_CALLBACK_URL')) {
   }))
 }
 
-// ─── Facebook ─────────────────────────────────────────────────
 if (hasEnv('FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET', 'FACEBOOK_CALLBACK_URL')) {
   passport.use(new FacebookStrategy({
     clientID:      process.env.FACEBOOK_APP_ID,
@@ -76,7 +68,6 @@ if (hasEnv('FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET', 'FACEBOOK_CALLBACK_URL')) {
   }))
 }
 
-// ─── LINE ─────────────────────────────────────────────────────
 if (hasEnv('LINE_CLIENT_ID', 'LINE_CLIENT_SECRET', 'LINE_CALLBACK_URL')) {
   passport.use(new LineStrategy({
     channelID:     process.env.LINE_CLIENT_ID,
@@ -97,7 +88,6 @@ if (hasEnv('LINE_CLIENT_ID', 'LINE_CLIENT_SECRET', 'LINE_CALLBACK_URL')) {
   }))
 }
 
-// ─── sign JWT ─────────────────────────────────────────────────
 function signToken(user) {
   return jwt.sign(
     { id: user.id, is_admin: user.is_admin },

@@ -1,36 +1,54 @@
-const sql = require('mssql')
+const { Pool } = require('pg')
 
-const config = {
-  server:   process.env.DB_HOST || '127.0.0.1',
-  port:     parseInt(process.env.DB_PORT) || 1433,
-  database: process.env.DB_NAME || 'nail_booking',
-  user:     process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD || '',
-  options: {
-    encrypt: false,
-    trustServerCertificate: true,
-    enableArithAbort: true,
-  },
-  pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
-}
-
-let poolPromise
-
-const getPool = () => {
-  if (!poolPromise) {
-    poolPromise = new sql.ConnectionPool(config)
-      .connect()
-      .then(pool => {
-        console.log('✅ MSSQL connected:', config.database)
-        return pool
-      })
-      .catch(err => {
-        console.error('❌ DB Error:', err.message)
-        poolPromise = null
-        throw err
-      })
+function buildConfig() {
+  if (process.env.DATABASE_URL) {
+    const ssl =
+      process.env.DATABASE_SSL === 'true'
+        ? { rejectUnauthorized: false }
+        : undefined
+    return { connectionString: process.env.DATABASE_URL, ssl }
   }
-  return poolPromise
+
+  return {
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: parseInt(process.env.DB_PORT, 10) || 5432,
+    database: process.env.DB_NAME || 'nail_booking',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+  }
 }
 
-module.exports = { sql, getPool }
+let pool
+
+function getPool() {
+  if (!pool) {
+    pool = new Pool(buildConfig())
+    pool.on('connect', () => {
+      if (!getPool._logged) {
+        console.log('✅ PostgreSQL connected:', buildConfig().database || 'via DATABASE_URL')
+        getPool._logged = true
+      }
+    })
+    pool.on('error', (err) => {
+      console.error('❌ DB pool error:', err.message)
+    })
+  }
+  return pool
+}
+
+async function withTransaction(fn) {
+  const client = await getPool().connect()
+  try {
+    await client.query('BEGIN')
+    const result = await fn(client)
+    await client.query('COMMIT')
+    return result
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+module.exports = { getPool, withTransaction }
