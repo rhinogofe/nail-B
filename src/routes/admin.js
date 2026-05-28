@@ -587,7 +587,39 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
 router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`DELETE FROM nailoption WHERE id = $1`, [req.params.id])
+    const optionId = req.params.id
+
+    const activeUse = await pool.query(
+      `
+        SELECT 1
+        FROM booking_nailoptions bn
+        JOIN bookings b ON b.id = bn.booking_id
+        WHERE bn.nailoption_id = $1
+          AND b.status != 'cancelled'
+        LIMIT 1
+      `,
+      [optionId]
+    )
+
+    if (activeUse.rows.length > 0) {
+      return res.status(409).json({
+        error:
+          'บริการนี้ยังถูกใช้ในคิวที่ยังไม่ยกเลิก ให้ปิดการใช้งาน (ไม่แสดง) แทนการลบ',
+      })
+    }
+
+    await pool.query(
+      `
+        DELETE FROM booking_nailoptions bn
+        USING bookings b
+        WHERE bn.booking_id = b.id
+          AND bn.nailoption_id = $1
+          AND b.status = 'cancelled'
+      `,
+      [optionId]
+    )
+
+    const result = await pool.query(`DELETE FROM nailoption WHERE id = $1`, [optionId])
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการบริการ' })
