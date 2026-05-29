@@ -331,6 +331,74 @@ router.patch('/settings/deposit', auth, admin, async (req, res) => {
   }
 })
 
+router.get('/settings/shop-hours', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT setting_key, setting_value FROM app_settings
+       WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
+    )
+    const map = Object.fromEntries(result.rows.map(r => [r.setting_key, Number(r.setting_value)]))
+    res.json({
+      open_hour: map.shop_open_hour ?? 9,
+      last_booking_hour: map.shop_last_booking_hour ?? 18,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
+  const open = Number(req.body?.open_hour)
+  const last = Number(req.body?.last_booking_hour)
+  if (!Number.isInteger(open) || open < 0 || open > 20)
+    return res.status(400).json({ error: 'open_hour ต้องอยู่ระหว่าง 0-20' })
+  if (!Number.isInteger(last) || last < open + 2 || last > 22)
+    return res.status(400).json({ error: 'last_booking_hour ต้องมากกว่า open_hour อย่างน้อย 2 และไม่เกิน 22' })
+  try {
+    const pool = getPool()
+    await pool.query(
+      `INSERT INTO app_settings (setting_key, setting_value)
+       VALUES ('shop_open_hour', $1), ('shop_last_booking_hour', $2)
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+      [String(open), String(last)]
+    )
+    res.json({ success: true, open_hour: open, last_booking_hour: last })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/advance-days', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT setting_value FROM app_settings WHERE setting_key = 'book_advance_days'`
+    )
+    res.json({ advance_days: Number(result.rows[0]?.setting_value || 30) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/advance-days', auth, admin, async (req, res) => {
+  const days = Number(req.body?.advance_days)
+  if (!Number.isInteger(days) || days < 1 || days > 365)
+    return res.status(400).json({ error: 'advance_days ต้องอยู่ระหว่าง 1-365' })
+  try {
+    const pool = getPool()
+    await pool.query(
+      `INSERT INTO app_settings (setting_key, setting_value)
+       VALUES ('book_advance_days', $1)
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+      [String(days)]
+    )
+    res.json({ success: true, advance_days: days })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/coupons/use', auth, admin, async (req, res) => {
   const couponCode = String(req.body?.coupon_code || '').trim().toUpperCase()
   if (!couponCode) {

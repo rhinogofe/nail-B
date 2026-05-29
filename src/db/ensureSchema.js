@@ -104,7 +104,11 @@ async function ensureSchema() {
 
   await pool.query(`
     INSERT INTO app_settings (setting_key, setting_value)
-    VALUES ('deposit_amount', '300')
+    VALUES
+      ('deposit_amount',         '300'),
+      ('shop_open_hour',         '9'),
+      ('shop_last_booking_hour', '18'),
+      ('book_advance_days',      '30')
     ON CONFLICT (setting_key) DO NOTHING
   `)
 
