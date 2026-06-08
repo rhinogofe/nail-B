@@ -108,7 +108,8 @@ async function ensureSchema() {
       ('deposit_amount',         '300'),
       ('shop_open_hour',         '9'),
       ('shop_last_booking_hour', '18'),
-      ('book_advance_days',      '30')
+      ('book_advance_days',      '30'),
+      ('booking_display_mode',   'normal')
     ON CONFLICT (setting_key) DO NOTHING
   `)
 

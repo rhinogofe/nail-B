@@ -71,6 +71,19 @@ router.get('/advance-days', auth, async (req, res) => {
   }
 })
 
+router.get('/booking-display', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT setting_value FROM app_settings WHERE setting_key = 'booking_display_mode'`
+    )
+    const mode = result.rows[0]?.setting_value === 'slots_2h' ? 'slots_2h' : 'normal'
+    res.json({ display_mode: mode })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/deposit-setting', auth, async (req, res) => {
   try {
     const pool = getPool()

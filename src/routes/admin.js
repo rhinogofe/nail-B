@@ -399,6 +399,35 @@ router.patch('/settings/advance-days', auth, admin, async (req, res) => {
   }
 })
 
+router.get('/settings/booking-display', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT setting_value FROM app_settings WHERE setting_key = 'booking_display_mode'`
+    )
+    const mode = result.rows[0]?.setting_value === 'slots_2h' ? 'slots_2h' : 'normal'
+    res.json({ display_mode: mode })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/booking-display', auth, admin, async (req, res) => {
+  const mode = req.body?.display_mode === 'slots_2h' ? 'slots_2h' : 'normal'
+  try {
+    const pool = getPool()
+    await pool.query(
+      `INSERT INTO app_settings (setting_key, setting_value)
+       VALUES ('booking_display_mode', $1)
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
+      [mode]
+    )
+    res.json({ success: true, display_mode: mode })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/coupons/use', auth, admin, async (req, res) => {
   const couponCode = String(req.body?.coupon_code || '').trim().toUpperCase()
   if (!couponCode) {
