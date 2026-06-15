@@ -92,6 +92,53 @@ router.get('/bookings', auth, admin, async (req, res) => {
   }
 })
 
+router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
+  const { month } = req.query
+  if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
+    return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
+  }
+
+  try {
+    const pool = getPool()
+    const [y, m] = String(month).split('-').map(Number)
+    const from = `${month}-01`
+    const lastDay = new Date(y, m, 0).getDate()
+    const to = `${month}-${String(lastDay).padStart(2, '0')}`
+
+    const result = await pool.query(
+      `
+        SELECT
+          booking_date,
+          COUNT(*) FILTER (WHERE status = 'awaiting_payment')::int AS unpaid_count,
+          COUNT(*) FILTER (WHERE status IN ('pending', 'done'))::int AS paid_count
+        FROM bookings
+        WHERE booking_date BETWEEN $1 AND $2
+          AND status != 'cancelled'
+        GROUP BY booking_date
+        ORDER BY booking_date ASC
+      `,
+      [from, to]
+    )
+
+    res.json(
+      result.rows.map((row) => {
+        const raw = row.booking_date
+        const date =
+          typeof raw === 'string'
+            ? raw.slice(0, 10)
+            : `${raw.getFullYear()}-${String(raw.getMonth() + 1).padStart(2, '0')}-${String(raw.getDate()).padStart(2, '0')}`
+        return {
+          date,
+          unpaid_count: row.unpaid_count,
+          paid_count: row.paid_count,
+        }
+      })
+    )
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
@@ -137,6 +184,41 @@ router.patch('/bookings/:id/cancel-paid', auth, admin, async (req, res) => {
       message: 'ยกเลิกคิวชำระแล้วแล้ว ช่วงเวลานี้ว่างให้จองใหม่ได้',
     })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/bookings/:id', auth, admin, async (req, res) => {
+  try {
+    await withTransaction(async (client) => {
+      const bookingRes = await client.query(
+        `SELECT id, status FROM bookings WHERE id = $1`,
+        [req.params.id]
+      )
+      if (!bookingRes.rows.length) {
+        const err = new Error('ไม่พบรายการจอง')
+        err.status = 404
+        throw err
+      }
+      if (bookingRes.rows[0].status !== 'cancelled') {
+        const err = new Error('ลบได้เฉพาะคิวที่ยกเลิกแล้ว')
+        err.status = 400
+        throw err
+      }
+      await client.query(`DELETE FROM point_logs WHERE booking_id = $1`, [req.params.id])
+      const result = await client.query(
+        `DELETE FROM bookings WHERE id = $1 AND status = 'cancelled'`,
+        [req.params.id]
+      )
+      if (result.rowCount === 0) {
+        const err = new Error('ไม่พบรายการจอง')
+        err.status = 404
+        throw err
+      }
+    })
+    res.json({ success: true, message: 'ลบรายการจองแล้ว' })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
@@ -548,6 +630,44 @@ router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
     await pool.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
     res.json({ success: true })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/users/:id', auth, admin, async (req, res) => {
+  const userId = req.params.id
+  if (userId === req.user.id) {
+    return res.status(400).json({ error: 'ไม่สามารถลบบัญชีของตัวเองได้' })
+  }
+  try {
+    await withTransaction(async (client) => {
+      const userRes = await client.query(
+        `SELECT id, is_admin FROM users WHERE id = $1`,
+        [userId]
+      )
+      if (!userRes.rows.length) {
+        const err = new Error('ไม่พบผู้ใช้')
+        err.status = 404
+        throw err
+      }
+      if (userRes.rows[0].is_admin) {
+        const err = new Error('ไม่สามารถลบบัญชีแอดมินได้')
+        err.status = 400
+        throw err
+      }
+      await client.query(`DELETE FROM point_logs WHERE user_id = $1`, [userId])
+      await client.query(
+        `DELETE FROM booking_nailoptions
+         WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = $1)`,
+        [userId]
+      )
+      await client.query(`DELETE FROM bookings WHERE user_id = $1`, [userId])
+      await client.query(`DELETE FROM coupons WHERE user_id = $1`, [userId])
+      await client.query(`DELETE FROM users WHERE id = $1`, [userId])
+    })
+    res.json({ success: true })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
