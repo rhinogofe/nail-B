@@ -2,6 +2,7 @@ const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
 const { getPool, withTransaction } = require('../db/pool')
+const { computeBookUntilDate, getAdvanceSettings, todayYmdBangkok } = require('../utils/bookingWindow')
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -372,10 +373,11 @@ router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
 router.get('/settings/advance-days', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'book_advance_days'`
-    )
-    res.json({ advance_days: Number(result.rows[0]?.setting_value || 30) })
+    const settings = await getAdvanceSettings(pool)
+    res.json({
+      advance_days: settings.advanceDays,
+      book_until_date: settings.bookUntilDate,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -387,13 +389,14 @@ router.patch('/settings/advance-days', auth, admin, async (req, res) => {
     return res.status(400).json({ error: 'advance_days ต้องอยู่ระหว่าง 1-365' })
   try {
     const pool = getPool()
+    const bookUntil = computeBookUntilDate(days, todayYmdBangkok())
     await pool.query(
       `INSERT INTO app_settings (setting_key, setting_value)
-       VALUES ('book_advance_days', $1)
-       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
-      [String(days)]
+       VALUES ('book_advance_days', $1), ('book_until_date', $2)
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
+      [String(days), bookUntil]
     )
-    res.json({ success: true, advance_days: days })
+    res.json({ success: true, advance_days: days, book_until_date: bookUntil })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

@@ -1,6 +1,7 @@
 const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
 const { getPool } = require('../db/pool')
+const { getAdvanceSettings, validateBookingDateRange } = require('../utils/bookingWindow')
 
 async function syncBookingOptions(pool, bookingId, optionIds) {
   await pool.query(`DELETE FROM booking_nailoptions WHERE booking_id = $1`, [bookingId])
@@ -84,10 +85,11 @@ router.get('/shop-hours', auth, async (req, res) => {
 router.get('/advance-days', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'book_advance_days'`
-    )
-    res.json({ advance_days: Number(result.rows[0]?.setting_value || 30) })
+    const settings = await getAdvanceSettings(pool)
+    res.json({
+      advance_days: settings.advanceDays,
+      book_until_date: settings.bookUntilDate,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -234,6 +236,10 @@ router.post('/', auth, async (req, res) => {
   try {
     const pool = getPool()
     const { openHour, lastBookingHour } = await getShopHours(pool)
+    const { bookUntilDate } = await getAdvanceSettings(pool)
+    const dateError = validateBookingDateRange(booking_date, bookUntilDate)
+    if (dateError) return res.status(400).json({ error: dateError })
+
     if (start_hour < openHour || start_hour > lastBookingHour)
       return res.status(400).json({ error: `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour}` })
 

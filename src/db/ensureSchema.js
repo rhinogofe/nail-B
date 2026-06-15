@@ -115,6 +115,25 @@ async function ensureSchema() {
     ON CONFLICT (setting_key) DO NOTHING
   `)
 
+  const { computeBookUntilDate, todayYmdBangkok } = require('../utils/bookingWindow')
+  const advanceRow = await pool.query(
+    `SELECT setting_value FROM app_settings WHERE setting_key = 'book_advance_days'`
+  )
+  const untilRow = await pool.query(
+    `SELECT setting_value FROM app_settings WHERE setting_key = 'book_until_date'`
+  )
+  const advanceDays = Number(advanceRow.rows[0]?.setting_value || 30)
+  const untilDate = untilRow.rows[0]?.setting_value
+  if (!untilDate) {
+    const bookUntil = computeBookUntilDate(advanceDays, todayYmdBangkok())
+    await pool.query(
+      `INSERT INTO app_settings (setting_key, setting_value)
+       VALUES ('book_until_date', $1)
+       ON CONFLICT (setting_key) DO NOTHING`,
+      [bookUntil]
+    )
+  }
+
   const seed = await pool.query(`SELECT COUNT(*)::int AS n FROM nailoption`)
   if (seed.rows[0].n === 0) {
     await pool.query(`
