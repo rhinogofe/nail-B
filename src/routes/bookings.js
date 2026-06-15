@@ -20,21 +20,43 @@ async function syncBookingOptions(pool, bookingId, optionIds) {
   )
 }
 
+function optionDateFilter(bookingDate, paramIndex) {
+  if (!bookingDate) return ''
+  return `
+    AND (show_from_date IS NULL OR show_from_date <= $${paramIndex})
+    AND (show_to_date IS NULL OR show_to_date >= $${paramIndex})
+  `
+}
+
 async function validateOptionIds(pool, optionIds, bookingDate) {
   const placeholders = optionIds.map((_, idx) => `$${idx + 1}`).join(', ')
-  const dateParam = bookingDate ? `$${optionIds.length + 1}` : null
-  const dateFilter = bookingDate
-    ? `
-      AND (show_from_date IS NULL OR show_from_date <= ${dateParam})
-      AND (show_to_date IS NULL OR show_to_date >= ${dateParam})
-    `
-    : ''
+  const dateParam = bookingDate ? optionIds.length + 1 : null
+  const dateFilter = bookingDate ? optionDateFilter(bookingDate, dateParam) : ''
   const params = bookingDate ? [...optionIds, bookingDate] : optionIds
   const result = await pool.query(
     `SELECT id FROM nailoption WHERE is_active = true AND id IN (${placeholders}) ${dateFilter}`,
     params
   )
   return result.rows.length === optionIds.length
+}
+
+async function validateRequiredOptions(pool, optionIds, bookingDate) {
+  const params = bookingDate ? [bookingDate] : []
+  const dateFilter = bookingDate ? optionDateFilter(bookingDate, 1) : ''
+  const result = await pool.query(
+    `
+      SELECT id, option_name
+      FROM nailoption
+      WHERE is_active = true
+        AND is_required = true
+        ${dateFilter}
+    `,
+    params
+  )
+  const selected = new Set(optionIds.map(String))
+  const missing = result.rows.filter((row) => !selected.has(String(row.id)))
+  if (!missing.length) return null
+  return `กรุณาเลือกบริการที่จำเป็น: ${missing.map((row) => row.option_name).join(', ')}`
 }
 
 async function getShopHours(pool) {
@@ -117,7 +139,7 @@ router.get('/options', auth, async (req, res) => {
 
     const result = await pool.query(
       `
-        SELECT id, option_name, description, price, duration_min, is_active,
+        SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
                show_from_date, show_to_date
         FROM nailoption
         WHERE is_active = true
@@ -215,10 +237,15 @@ router.post('/', auth, async (req, res) => {
     if (start_hour < openHour || start_hour > lastBookingHour)
       return res.status(400).json({ error: `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour}` })
 
-    const uniqueOptionIds = [...new Set(option_ids)]
+    const uniqueOptionIds = [...new Set(option_ids.map(String))]
     const isValidOptions = await validateOptionIds(pool, uniqueOptionIds, booking_date)
     if (!isValidOptions) {
       return res.status(400).json({ error: 'รายการบริการที่เลือกไม่ถูกต้อง' })
+    }
+
+    const requiredError = await validateRequiredOptions(pool, uniqueOptionIds, booking_date)
+    if (requiredError) {
+      return res.status(400).json({ error: requiredError })
     }
 
     const overlap = await pool.query(

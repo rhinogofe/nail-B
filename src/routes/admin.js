@@ -567,11 +567,20 @@ function validateShowDateRange(showFrom, showTo) {
   return null
 }
 
+function parseOptionalColor(value) {
+  if (value == null || value === '') return null
+  const color = String(value).trim()
+  if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
+    return { error: 'color ต้องเป็นรูปแบบ #RRGGBB' }
+  }
+  return color
+}
+
 router.get('/nailoptions', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
     const result = await pool.query(`
-      SELECT id, option_name, description, price, duration_min, is_active,
+      SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
              show_from_date, show_to_date, created_at, updated_at
       FROM nailoption
       ORDER BY option_name ASC
@@ -588,8 +597,10 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
   const price = Number(req.body?.price)
   const duration_min = Number(req.body?.duration_min)
   const is_active = req.body?.is_active !== false
+  const is_required = Boolean(req.body?.is_required)
   const showFromParsed = parseOptionalDate(req.body?.show_from_date)
   const showToParsed = parseOptionalDate(req.body?.show_to_date)
+  const colorParsed = parseOptionalColor(req.body?.color)
 
   if (!option_name) return res.status(400).json({ error: 'กรุณาระบุชื่อบริการ' })
   if (!Number.isFinite(price) || price < 0) {
@@ -600,6 +611,7 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
   }
   if (showFromParsed?.error) return res.status(400).json({ error: showFromParsed.error })
   if (showToParsed?.error) return res.status(400).json({ error: showToParsed.error })
+  if (colorParsed?.error) return res.status(400).json({ error: colorParsed.error })
   const rangeError = validateShowDateRange(showFromParsed, showToParsed)
   if (rangeError) return res.status(400).json(rangeError)
 
@@ -608,14 +620,14 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
     const result = await pool.query(
       `
         INSERT INTO nailoption (
-          option_name, description, price, duration_min, is_active,
+          option_name, description, price, duration_min, is_active, is_required, color,
           show_from_date, show_to_date
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, option_name, description, price, duration_min, is_active,
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
                   show_from_date, show_to_date, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, showFromParsed, showToParsed]
+      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed]
     )
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
@@ -632,8 +644,10 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
   const price = Number(req.body?.price)
   const duration_min = Number(req.body?.duration_min)
   const is_active = Boolean(req.body?.is_active)
+  const is_required = Boolean(req.body?.is_required)
   const showFromParsed = parseOptionalDate(req.body?.show_from_date)
   const showToParsed = parseOptionalDate(req.body?.show_to_date)
+  const colorParsed = parseOptionalColor(req.body?.color)
 
   if (!option_name) return res.status(400).json({ error: 'กรุณาระบุชื่อบริการ' })
   if (!Number.isFinite(price) || price < 0) {
@@ -644,6 +658,7 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
   }
   if (showFromParsed?.error) return res.status(400).json({ error: showFromParsed.error })
   if (showToParsed?.error) return res.status(400).json({ error: showToParsed.error })
+  if (colorParsed?.error) return res.status(400).json({ error: colorParsed.error })
   const rangeError = validateShowDateRange(showFromParsed, showToParsed)
   if (rangeError) return res.status(400).json(rangeError)
 
@@ -658,14 +673,16 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
           price = $3,
           duration_min = $4,
           is_active = $5,
-          show_from_date = $6,
-          show_to_date = $7,
+          is_required = $6,
+          color = $7,
+          show_from_date = $8,
+          show_to_date = $9,
           updated_at = NOW()
-        WHERE id = $8
-        RETURNING id, option_name, description, price, duration_min, is_active,
+        WHERE id = $10
+        RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
                   show_from_date, show_to_date, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, showFromParsed, showToParsed, req.params.id]
+      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, req.params.id]
     )
 
     if (result.rowCount === 0) {

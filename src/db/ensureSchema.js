@@ -100,6 +100,8 @@ async function ensureSchema() {
   await pool.query(`
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_from_date DATE;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_to_date DATE;
+    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS is_required BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS color TEXT;
   `)
 
   await pool.query(`
