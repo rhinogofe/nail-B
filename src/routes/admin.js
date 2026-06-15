@@ -754,9 +754,6 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
     )
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
-    if (err.code === '23505') {
-      return res.status(409).json({ error: 'ชื่อบริการซ้ำ กรุณาใช้ชื่ออื่น' })
-    }
     res.status(500).json({ error: err.message })
   }
 })
@@ -814,9 +811,6 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
 
     res.json({ success: true, option: result.rows[0] })
   } catch (err) {
-    if (err.code === '23505') {
-      return res.status(409).json({ error: 'ชื่อบริการซ้ำ กรุณาใช้ชื่ออื่น' })
-    }
     res.status(500).json({ error: err.message })
   }
 })
@@ -832,7 +826,7 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
         FROM booking_nailoptions bn
         JOIN bookings b ON b.id = bn.booking_id
         WHERE bn.nailoption_id = $1
-          AND b.status != 'cancelled'
+          AND b.status IN ('awaiting_payment', 'pending')
         LIMIT 1
       `,
       [optionId]
@@ -841,20 +835,11 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
     if (activeUse.rows.length > 0) {
       return res.status(409).json({
         error:
-          'บริการนี้ยังถูกใช้ในคิวที่ยังไม่ยกเลิก ให้ปิดการใช้งาน (ไม่แสดง) แทนการลบ',
+          'บริการนี้ยังถูกใช้ในคิวที่รอชำระหรือรอให้บริการ ให้ปิดการใช้งาน (ไม่แสดง) แทนการลบ',
       })
     }
 
-    await pool.query(
-      `
-        DELETE FROM booking_nailoptions bn
-        USING bookings b
-        WHERE bn.booking_id = b.id
-          AND bn.nailoption_id = $1
-          AND b.status = 'cancelled'
-      `,
-      [optionId]
-    )
+    await pool.query(`DELETE FROM booking_nailoptions WHERE nailoption_id = $1`, [optionId])
 
     const result = await pool.query(`DELETE FROM nailoption WHERE id = $1`, [optionId])
 
@@ -869,6 +854,103 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
         error: 'บริการนี้ถูกใช้ในคิวจองแล้ว ให้ปิดการใช้งาน (ไม่แสดง) แทนการลบ',
       })
     }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Service locations (ปุ่มลัดเพิ่มสถานที่) ─────────────────
+
+router.get('/service-locations', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(`
+      SELECT id, name, color, description, sort_order, is_active, created_at, updated_at
+      FROM service_locations
+      ORDER BY sort_order ASC, name ASC
+    `)
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/service-locations', auth, admin, async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const description = String(req.body?.description || '').trim() || null
+  const colorParsed = parseOptionalColor(req.body?.color || '#3b82f6')
+  const sort_order = Number(req.body?.sort_order ?? 0)
+  const is_active = req.body?.is_active !== false
+
+  if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อสถานที่' })
+  if (colorParsed?.error) return res.status(400).json({ error: colorParsed.error })
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        INSERT INTO service_locations (name, color, description, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, name, color, description, sort_order, is_active, created_at, updated_at
+      `,
+      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active]
+    )
+    res.status(201).json({ success: true, location: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อสถานที่ซ้ำ กรุณาใช้ชื่ออื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/service-locations/:id', auth, admin, async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const description = String(req.body?.description || '').trim() || null
+  const colorParsed = parseOptionalColor(req.body?.color)
+  const sort_order = Number(req.body?.sort_order ?? 0)
+  const is_active = Boolean(req.body?.is_active)
+
+  if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อสถานที่' })
+  if (colorParsed?.error) return res.status(400).json({ error: colorParsed.error })
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        UPDATE service_locations
+        SET
+          name = $1,
+          color = $2,
+          description = $3,
+          sort_order = $4,
+          is_active = $5,
+          updated_at = NOW()
+        WHERE id = $6
+        RETURNING id, name, color, description, sort_order, is_active, created_at, updated_at
+      `,
+      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active, req.params.id]
+    )
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบสถานที่' })
+    }
+    res.json({ success: true, location: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อสถานที่ซ้ำ กรุณาใช้ชื่ออื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/service-locations/:id', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(`DELETE FROM service_locations WHERE id = $1`, [req.params.id])
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบสถานที่' })
+    }
+    res.json({ success: true, message: 'ลบสถานที่แล้ว' })
+  } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })

@@ -71,9 +71,6 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_nailoption_option_name
-      ON nailoption (option_name);
-
     CREATE TABLE IF NOT EXISTS booking_nailoptions (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
@@ -102,6 +99,29 @@ async function ensureSchema() {
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_to_date DATE;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS is_required BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS color TEXT;
+  `)
+
+  await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_locations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL UNIQUE,
+      color TEXT NOT NULL DEFAULT '#3b82f6',
+      description TEXT,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `)
+
+  await pool.query(`
+    INSERT INTO service_locations (name, color, description, sort_order)
+    VALUES
+      ('จุฬา', '#3b82f6', 'สถานที่ให้บริการ จุฬา', 1),
+      ('เกษตร', '#22c55e', 'สถานที่ให้บริการ เกษตร', 2)
+    ON CONFLICT (name) DO NOTHING
   `)
 
   await pool.query(`
