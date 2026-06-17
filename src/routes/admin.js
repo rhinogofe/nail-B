@@ -115,32 +115,36 @@ router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
     const result = await pool.query(
       `
         SELECT
-          booking_date,
+          to_char(booking_date, 'YYYY-MM-DD') AS date,
           COUNT(*) FILTER (WHERE status = 'awaiting_payment')::int AS unpaid_count,
-          COUNT(*) FILTER (WHERE status IN ('pending', 'done'))::int AS paid_count
+          COUNT(*) FILTER (WHERE status IN ('pending', 'done'))::int AS paid_count,
+          COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
         FROM bookings
         WHERE booking_date BETWEEN $1 AND $2
-          AND status != 'cancelled'
         GROUP BY booking_date
-        ORDER BY booking_date ASC
+        ORDER BY date ASC
       `,
       [from, to]
     )
 
-    res.json(
-      result.rows.map((row) => {
-        const raw = row.booking_date
-        const date =
-          typeof raw === 'string'
-            ? raw.slice(0, 10)
-            : `${raw.getFullYear()}-${String(raw.getMonth() + 1).padStart(2, '0')}-${String(raw.getDate()).padStart(2, '0')}`
-        return {
-          date,
-          unpaid_count: row.unpaid_count,
-          paid_count: row.paid_count,
-        }
-      })
-    )
+    const days = result.rows.map((row) => ({
+      date: row.date,
+      unpaid_count: row.unpaid_count,
+      paid_count: row.paid_count,
+      cancelled_count: row.cancelled_count,
+    }))
+
+    const month_paid_count = days.reduce((sum, row) => sum + row.paid_count, 0)
+    const month_unpaid_count = days.reduce((sum, row) => sum + row.unpaid_count, 0)
+    const month_cancelled_count = days.reduce((sum, row) => sum + row.cancelled_count, 0)
+
+    res.json({
+      month: String(month),
+      days,
+      month_paid_count,
+      month_unpaid_count,
+      month_cancelled_count,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -159,13 +163,15 @@ router.get('/revenue/summary', auth, admin, async (req, res) => {
     const lastDay = new Date(y, m, 0).getDate()
     const to = `${month}-${String(lastDay).padStart(2, '0')}`
 
+    const depositResult = await pool.query(
+      `SELECT setting_value FROM app_settings WHERE setting_key = 'deposit_amount'`
+    )
+    const depositRate = Number(depositResult.rows[0]?.setting_value) || 300
+
     const result = await pool.query(
       `
         SELECT
           to_char(booking_date, 'YYYY-MM-DD') AS date,
-          COUNT(*)::int AS booking_count,
-          COUNT(*) FILTER (WHERE status IN ('cancelled', 'done'))::int AS booked_count,
-          COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count,
           COUNT(*) FILTER (WHERE status = 'done')::int AS done_count,
           COALESCE(SUM(total) FILTER (WHERE status = 'done' AND total IS NOT NULL), 0)::numeric AS total_amount
         FROM bookings
@@ -176,26 +182,26 @@ router.get('/revenue/summary', auth, admin, async (req, res) => {
       [from, to]
     )
 
-    const days = result.rows.map((row) => ({
-      date: row.date,
-      booking_count: row.booking_count,
-      booked_count: row.booked_count,
-      cancelled_count: row.cancelled_count,
-      done_count: row.done_count,
-      total_amount: Number(row.total_amount),
-    }))
+    const days = result.rows.map((row) => {
+      const doneCount = row.done_count
+      return {
+        date: row.date,
+        done_count: doneCount,
+        deposit_amount: doneCount * depositRate,
+        total_amount: Number(row.total_amount),
+      }
+    })
 
+    const month_deposit_total = days.reduce((sum, row) => sum + row.deposit_amount, 0)
     const month_total = days.reduce((sum, row) => sum + row.total_amount, 0)
-    const month_booking_count = days.reduce((sum, row) => sum + row.booked_count, 0)
-    const month_cancelled_count = days.reduce((sum, row) => sum + row.cancelled_count, 0)
     const month_done_count = days.reduce((sum, row) => sum + row.done_count, 0)
 
     res.json({
       month: String(month),
+      deposit_rate: depositRate,
       days,
+      month_deposit_total,
       month_total,
-      month_booking_count,
-      month_cancelled_count,
       month_done_count,
     })
   } catch (err) {
