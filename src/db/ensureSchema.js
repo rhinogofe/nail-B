@@ -27,6 +27,7 @@ async function ensureSchema() {
         CHECK (status IN ('awaiting_payment', 'pending', 'done', 'cancelled')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ,
+      total NUMERIC(10, 2),
       UNIQUE (booking_date, start_hour)
     );
 
@@ -99,6 +100,7 @@ async function ensureSchema() {
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_to_date DATE;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS is_required BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS color TEXT;
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total NUMERIC(10, 2);
   `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)

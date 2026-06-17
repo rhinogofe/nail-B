@@ -3,6 +3,12 @@ const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
 const { getPool, withTransaction } = require('../db/pool')
 const { computeBookUntilDate, getAdvanceSettings, todayYmdBangkok } = require('../utils/bookingWindow')
+const {
+  syncBookingOptions,
+  validateOptionIds,
+  validateRequiredOptions,
+  normalizeOptionIds,
+} = require('../utils/bookingOptions')
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -47,6 +53,7 @@ router.get('/bookings', auth, admin, async (req, res) => {
           b.status,
           b.created_at,
           b.completed_at,
+          b.total,
           u.id         AS user_id,
           u.name       AS user_name,
           u.email      AS user_email,
@@ -134,6 +141,63 @@ router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
         }
       })
     )
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/revenue/summary', auth, admin, async (req, res) => {
+  const { month } = req.query
+  if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
+    return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
+  }
+
+  try {
+    const pool = getPool()
+    const [y, m] = String(month).split('-').map(Number)
+    const from = `${month}-01`
+    const lastDay = new Date(y, m, 0).getDate()
+    const to = `${month}-${String(lastDay).padStart(2, '0')}`
+
+    const result = await pool.query(
+      `
+        SELECT
+          to_char(booking_date, 'YYYY-MM-DD') AS date,
+          COUNT(*)::int AS booking_count,
+          COUNT(*) FILTER (WHERE status IN ('cancelled', 'done'))::int AS booked_count,
+          COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count,
+          COUNT(*) FILTER (WHERE status = 'done')::int AS done_count,
+          COALESCE(SUM(total) FILTER (WHERE status = 'done' AND total IS NOT NULL), 0)::numeric AS total_amount
+        FROM bookings
+        WHERE booking_date BETWEEN $1 AND $2
+        GROUP BY booking_date
+        ORDER BY date ASC
+      `,
+      [from, to]
+    )
+
+    const days = result.rows.map((row) => ({
+      date: row.date,
+      booking_count: row.booking_count,
+      booked_count: row.booked_count,
+      cancelled_count: row.cancelled_count,
+      done_count: row.done_count,
+      total_amount: Number(row.total_amount),
+    }))
+
+    const month_total = days.reduce((sum, row) => sum + row.total_amount, 0)
+    const month_booking_count = days.reduce((sum, row) => sum + row.booked_count, 0)
+    const month_cancelled_count = days.reduce((sum, row) => sum + row.cancelled_count, 0)
+    const month_done_count = days.reduce((sum, row) => sum + row.done_count, 0)
+
+    res.json({
+      month: String(month),
+      days,
+      month_total,
+      month_booking_count,
+      month_cancelled_count,
+      month_done_count,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -566,6 +630,11 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
 })
 
 router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
+  const total = Number(req.body?.total)
+  if (!Number.isFinite(total) || total < 0) {
+    return res.status(400).json({ error: 'กรุณาระบุยอดเงินที่ถูกต้อง' })
+  }
+
   try {
     await withTransaction(async (client) => {
       const found = await client.query(
@@ -580,8 +649,8 @@ router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
       const booking = found.rows[0]
 
       await client.query(
-        `UPDATE bookings SET status = 'done', completed_at = NOW() WHERE id = $1`,
-        [booking.id]
+        `UPDATE bookings SET status = 'done', completed_at = NOW(), total = $2 WHERE id = $1`,
+        [booking.id, total]
       )
 
       await client.query(
@@ -596,6 +665,89 @@ router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
     })
 
     res.json({ success: true, message: 'เสร็จแล้ว! ลูกค้าได้รับ +10 คะแนน' })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/bookings/:id', auth, admin, async (req, res) => {
+  if (!('total' in req.body)) {
+    return res.status(400).json({ error: 'กรุณาระบุยอดเงิน' })
+  }
+  const total = Number(req.body.total)
+  if (!Number.isFinite(total) || total < 0) {
+    return res.status(400).json({ error: 'ยอดเงินไม่ถูกต้อง' })
+  }
+
+  const hasOptions = 'nailoption_ids' in req.body
+  if (hasOptions && !Array.isArray(req.body.nailoption_ids)) {
+    return res.status(400).json({ error: 'nailoption_ids ต้องเป็น array' })
+  }
+
+  try {
+    const booking = await withTransaction(async (client) => {
+      const existing = await client.query(
+        `SELECT id, booking_date, status FROM bookings WHERE id = $1 FOR UPDATE`,
+        [req.params.id]
+      )
+      if (existing.rowCount === 0) throw { status: 404, message: 'ไม่พบคิว' }
+      const row = existing.rows[0]
+      if (row.status === 'cancelled') {
+        throw { status: 404, message: 'ไม่พบคิว หรือไม่สามารถแก้ไขได้' }
+      }
+
+      const optionIds = hasOptions ? normalizeOptionIds(req.body.nailoption_ids) : null
+      if (optionIds !== null) {
+        if (!optionIds.length) {
+          throw { status: 400, message: 'กรุณาเลือกบริการอย่างน้อย 1 รายการ' }
+        }
+        const isValidOptions = await validateOptionIds(client, optionIds, null)
+        if (!isValidOptions) {
+          throw { status: 400, message: 'รายการบริการที่เลือกไม่ถูกต้อง' }
+        }
+        const requiredError = await validateRequiredOptions(client, optionIds, row.booking_date)
+        if (requiredError) {
+          throw { status: 400, message: requiredError }
+        }
+      }
+
+      const result = await client.query(
+        `
+          UPDATE bookings
+          SET total = $1
+          WHERE id = $2
+            AND status != 'cancelled'
+          RETURNING id, booking_date, start_hour, end_hour, status, total, created_at, completed_at
+        `,
+        [total, req.params.id]
+      )
+
+      if (optionIds !== null) {
+        await syncBookingOptions(client, req.params.id, optionIds)
+      }
+
+      const optionsResult = await client.query(
+        `
+          SELECT n.id, n.option_name
+          FROM booking_nailoptions bn
+          JOIN nailoption n ON n.id = bn.nailoption_id
+          WHERE bn.booking_id = $1
+          ORDER BY n.option_name ASC
+        `,
+        [req.params.id]
+      )
+
+      return {
+        ...result.rows[0],
+        nail_options: optionsResult.rows.map((o) => ({
+          id: o.id,
+          option_name: o.option_name,
+        })),
+      }
+    })
+
+    res.json({ success: true, message: 'บันทึกแล้ว', booking })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
