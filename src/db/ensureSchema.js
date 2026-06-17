@@ -101,6 +101,7 @@ async function ensureSchema() {
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS is_required BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS color TEXT;
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total NUMERIC(10, 2);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT;
   `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)

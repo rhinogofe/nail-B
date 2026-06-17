@@ -17,6 +17,10 @@ function addDaysYmd(ymd, days) {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
 }
 
+function normalizePhone(phone) {
+  return String(phone || '').replace(/[^\d+]/g, '').trim()
+}
+
 function buildDateRange(startDate, dayCount) {
   const dates = []
   let current = startDate
@@ -765,15 +769,15 @@ router.get('/users', auth, admin, async (req, res) => {
     const pool = getPool()
     const result = await pool.query(`
       SELECT
-        u.id, u.name, u.email, u.avatar_url, u.provider,
-        u.total_points, u.created_at,
+        u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note,
+        u.is_admin, u.total_points, u.created_at,
         COUNT(b.id)::int AS total_bookings,
-        SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings
+        SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
+        SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings
       FROM users u
       LEFT JOIN bookings b ON b.user_id = u.id
-      WHERE u.is_admin = false
-      GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.total_points, u.created_at
-      ORDER BY u.total_points DESC
+      GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
+      ORDER BY u.is_admin DESC, u.total_points DESC
     `)
     res.json(result.rows)
   } catch (err) {
@@ -783,10 +787,140 @@ router.get('/users', auth, admin, async (req, res) => {
 
 router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
   const { is_admin } = req.body
+  if (req.params.id === req.user.id && !is_admin) {
+    return res.status(400).json({ error: 'ไม่สามารถถอดสิทธิ์แอดมินของตัวเองได้' })
+  }
   try {
     const pool = getPool()
     await pool.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
     res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/users/:id', auth, admin, async (req, res) => {
+  const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key)
+  const fields = []
+  const params = []
+
+  if (has('name')) {
+    const name = String(req.body.name || '').trim()
+    if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อ' })
+    params.push(name)
+    fields.push(`name = $${params.length}`)
+  }
+
+  if (has('email')) {
+    const email = String(req.body.email || '').trim()
+    if (!email) return res.status(400).json({ error: 'กรุณาระบุอีเมล' })
+    params.push(email)
+    fields.push(`email = $${params.length}`)
+  }
+
+  if (has('total_points')) {
+    const totalPoints = Number(req.body.total_points)
+    if (!Number.isInteger(totalPoints) || totalPoints < 0) {
+      return res.status(400).json({ error: 'แต้มต้องเป็นจำนวนเต็มที่ไม่ติดลบ' })
+    }
+    params.push(totalPoints)
+    fields.push(`total_points = $${params.length}`)
+  }
+
+  if (has('admin_note')) {
+    const adminNote = String(req.body.admin_note || '').trim() || null
+    params.push(adminNote)
+    fields.push(`admin_note = $${params.length}`)
+  }
+
+  if (has('is_admin')) {
+    if (req.params.id === req.user.id && !req.body.is_admin) {
+      return res.status(400).json({ error: 'ไม่สามารถถอดสิทธิ์แอดมินของตัวเองได้' })
+    }
+    params.push(Boolean(req.body.is_admin))
+    fields.push(`is_admin = $${params.length}`)
+  }
+
+  if (!fields.length && !has('login_id')) {
+    return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
+  }
+
+  try {
+    const pool = getPool()
+    const existing = await pool.query(
+      `SELECT provider, provider_id, email FROM users WHERE id = $1`,
+      [req.params.id]
+    )
+    if (!existing.rows.length) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
+    }
+    const current = existing.rows[0]
+
+    if (has('login_id')) {
+      if (current.provider !== 'phone') {
+        return res.status(400).json({ error: 'แก้ไขรหัสล็อกอินได้เฉพาะบัญชีเบอร์โทร' })
+      }
+      const phone = normalizePhone(req.body.login_id)
+      if (!phone) {
+        return res.status(400).json({ error: 'กรุณาระบุเบอร์โทร' })
+      }
+      const dup = await pool.query(
+        `SELECT id FROM users WHERE provider = 'phone' AND provider_id = $1 AND id != $2 LIMIT 1`,
+        [phone, req.params.id]
+      )
+      if (dup.rows.length) {
+        return res.status(409).json({ error: 'เบอร์โทรนี้ถูกใช้แล้ว' })
+      }
+      params.push(phone)
+      fields.push(`provider_id = $${params.length}`)
+      if (!has('email') && String(current.email || '').endsWith('@phone.local')) {
+        params.push(`${phone}@phone.local`)
+        fields.push(`email = $${params.length}`)
+      }
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
+    }
+
+    params.push(req.params.id)
+
+    const result = await pool.query(
+      `
+        UPDATE users
+        SET ${fields.join(', ')}
+        WHERE id = $${params.length}
+        RETURNING id, name, email, avatar_url, provider, provider_id, admin_note, is_admin, total_points, created_at
+      `,
+      params
+    )
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
+    }
+
+    const user = result.rows[0]
+    const stats = await pool.query(
+      `
+        SELECT
+          COUNT(*)::int AS total_bookings,
+          SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
+          SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings
+        FROM bookings
+        WHERE user_id = $1
+      `,
+      [user.id]
+    )
+
+    res.json({
+      success: true,
+      user: {
+        ...user,
+        total_bookings: stats.rows[0]?.total_bookings || 0,
+        completed_bookings: stats.rows[0]?.completed_bookings || 0,
+        cancelled_bookings: stats.rows[0]?.cancelled_bookings || 0,
+      },
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
