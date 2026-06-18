@@ -21,6 +21,86 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
 }
 
+async function getShopHours(pool) {
+  const result = await pool.query(
+    `SELECT setting_key, setting_value FROM app_settings
+     WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
+  )
+  const map = Object.fromEntries(result.rows.map((r) => [r.setting_key, Number(r.setting_value)]))
+  return {
+    openHour: map.shop_open_hour ?? 9,
+    lastBookingHour: map.shop_last_booking_hour ?? 18,
+  }
+}
+
+async function assertSlotAvailable(client, bookingDate, startHour, excludeId = null) {
+  const params = [bookingDate, startHour, startHour + 2]
+  let excludeClause = ''
+  if (excludeId) {
+    params.push(excludeId)
+    excludeClause = `AND id != $${params.length}`
+  }
+  const overlap = await client.query(
+    `
+      SELECT id
+      FROM bookings
+      WHERE booking_date = $1
+        AND status != 'cancelled'
+        ${excludeClause}
+        AND start_hour < $3
+        AND COALESCE(end_hour, start_hour + 2) > $2
+      LIMIT 1
+    `,
+    params
+  )
+  if (overlap.rows.length > 0) {
+    const err = new Error('เวลานี้ทับกับคิวอื่น กรุณาเลือกเวลาใหม่')
+    err.status = 409
+    throw err
+  }
+}
+
+async function fetchAdminBookingWithOptions(client, bookingId) {
+  const result = await client.query(
+    `
+      SELECT
+        b.id,
+        b.booking_date,
+        b.start_hour,
+        b.end_hour,
+        b.status,
+        b.created_at,
+        b.completed_at,
+        b.total,
+        u.id AS user_id,
+        u.name AS user_name,
+        u.email AS user_email
+      FROM bookings b
+      JOIN users u ON u.id = b.user_id
+      WHERE b.id = $1
+    `,
+    [bookingId]
+  )
+  if (!result.rows.length) return null
+  const optionsResult = await client.query(
+    `
+      SELECT n.id, n.option_name
+      FROM booking_nailoptions bn
+      JOIN nailoption n ON n.id = bn.nailoption_id
+      WHERE bn.booking_id = $1
+      ORDER BY n.option_name ASC
+    `,
+    [bookingId]
+  )
+  return {
+    ...result.rows[0],
+    nail_options: optionsResult.rows.map((o) => ({
+      id: o.id,
+      option_name: o.option_name,
+    })),
+  }
+}
+
 function buildDateRange(startDate, dayCount) {
   const dates = []
   let current = startDate
@@ -209,6 +289,175 @@ router.get('/revenue/summary', auth, admin, async (req, res) => {
       month_done_count,
     })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/bookings', auth, admin, async (req, res) => {
+  const { user_id, booking_date, start_hour, nailoption_ids, status: reqStatus, total } = req.body
+  if (!user_id || !booking_date || start_hour == null) {
+    return res.status(400).json({ error: 'ต้องระบุ user_id, booking_date และ start_hour' })
+  }
+  if (!Array.isArray(nailoption_ids) || nailoption_ids.length === 0) {
+    return res.status(400).json({ error: 'กรุณาเลือกบริการอย่างน้อย 1 รายการ' })
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(booking_date))) {
+    return res.status(400).json({ error: 'รูปแบบวันที่ไม่ถูกต้อง' })
+  }
+
+  const allowedStatuses = ['awaiting_payment', 'pending', 'done']
+  const status = allowedStatuses.includes(reqStatus) ? reqStatus : 'pending'
+  const startHourNum = Number(start_hour)
+  if (!Number.isInteger(startHourNum)) {
+    return res.status(400).json({ error: 'start_hour ไม่ถูกต้อง' })
+  }
+
+  const totalProvided = total !== undefined && total !== null && total !== ''
+  const totalNum = totalProvided ? Number(total) : null
+  if (status === 'done' && (!totalProvided || !Number.isFinite(totalNum) || totalNum < 0)) {
+    return res.status(400).json({ error: 'สถานะทำเสร็จแล้วต้องระบุยอดเงิน' })
+  }
+  if (totalProvided && (!Number.isFinite(totalNum) || totalNum < 0)) {
+    return res.status(400).json({ error: 'ยอดเงินไม่ถูกต้อง' })
+  }
+
+  try {
+    const pool = getPool()
+    const { openHour, lastBookingHour } = await getShopHours(pool)
+    if (startHourNum < openHour || startHourNum > lastBookingHour) {
+      return res.status(400).json({ error: `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour}` })
+    }
+
+    const optionIds = normalizeOptionIds(nailoption_ids)
+    if (!optionIds.length) {
+      return res.status(400).json({ error: 'กรุณาเลือกบริการอย่างน้อย 1 รายการ' })
+    }
+
+    const booking = await withTransaction(async (client) => {
+      const userRes = await client.query(`SELECT id FROM users WHERE id = $1`, [user_id])
+      if (!userRes.rows.length) {
+        const err = new Error('ไม่พบผู้ใช้')
+        err.status = 404
+        throw err
+      }
+
+      const isValidOptions = await validateOptionIds(client, optionIds, null)
+      if (!isValidOptions) {
+        const err = new Error('รายการบริการที่เลือกไม่ถูกต้อง')
+        err.status = 400
+        throw err
+      }
+      const requiredError = await validateRequiredOptions(client, optionIds, booking_date)
+      if (requiredError) {
+        const err = new Error(requiredError)
+        err.status = 400
+        throw err
+      }
+
+      await assertSlotAvailable(client, booking_date, startHourNum)
+
+      const endHour = startHourNum + 2
+      const completedAt = status === 'done' ? new Date() : null
+      const bookingTotal = totalProvided ? totalNum : null
+
+      const reused = await client.query(
+        `
+          UPDATE bookings
+          SET
+            user_id = $1,
+            status = $2,
+            completed_at = $3,
+            total = $4,
+            end_hour = COALESCE(end_hour, $5)
+          WHERE booking_date = $6
+            AND start_hour = $7
+            AND status = 'cancelled'
+          RETURNING id
+        `,
+        [user_id, status, completedAt, bookingTotal, endHour, booking_date, startHourNum]
+      )
+
+      let bookingId
+      if (reused.rows.length > 0) {
+        bookingId = reused.rows[0].id
+      } else {
+        const inserted = await client.query(
+          `
+            INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status, total, completed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+          `,
+          [user_id, booking_date, startHourNum, endHour, status, bookingTotal, completedAt]
+        )
+        bookingId = inserted.rows[0].id
+      }
+
+      await syncBookingOptions(client, bookingId, optionIds)
+
+      if (status === 'done') {
+        await client.query(
+          `INSERT INTO point_logs (user_id, booking_id, points) VALUES ($1, $2, 10)`,
+          [user_id, bookingId]
+        )
+        await client.query(
+          `UPDATE users SET total_points = total_points + 10 WHERE id = $1`,
+          [user_id]
+        )
+      }
+
+      return fetchAdminBookingWithOptions(client, bookingId)
+    })
+
+    res.status(201).json({
+      success: true,
+      message: status === 'done' ? 'บันทึกคิวย้อนหลังแล้ว (+10 คะแนน)' : 'เพิ่มคิวแล้ว',
+      booking,
+    })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'เวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
+  const targetStatus = req.body?.status === 'pending' ? 'pending' : 'awaiting_payment'
+
+  try {
+    await withTransaction(async (client) => {
+      const existing = await client.query(
+        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 FOR UPDATE`,
+        [req.params.id]
+      )
+      if (!existing.rows.length || existing.rows[0].status !== 'cancelled') {
+        const err = new Error('ไม่พบคิวที่ยกเลิกแล้ว')
+        err.status = 404
+        throw err
+      }
+
+      const row = existing.rows[0]
+      await assertSlotAvailable(client, row.booking_date, row.start_hour, row.id)
+
+      await client.query(
+        `
+          UPDATE bookings
+          SET status = $1, completed_at = NULL
+          WHERE id = $2 AND status = 'cancelled'
+        `,
+        [targetStatus, row.id]
+      )
+    })
+
+    const message =
+      targetStatus === 'pending'
+        ? 'คืนสถานะจองแล้ว (ชำระแล้ว / รอให้บริการ)'
+        : 'คืนสถานะจองแล้ว (รอชำระเงิน)'
+
+    res.json({ success: true, message })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
