@@ -65,9 +65,28 @@ async function resolveTikTokVideo(inputUrl) {
   }
 }
 
+async function fetchTikTokThumbnail(tiktokUrl) {
+  try {
+    const response = await fetch(
+      `https://www.tiktok.com/oembed?url=${encodeURIComponent(tiktokUrl)}`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; NailBooking/1.0)',
+        },
+      }
+    )
+    if (!response.ok) return null
+    const data = await response.json()
+    return data.thumbnail_url || null
+  } catch {
+    return null
+  }
+}
+
 module.exports = {
   extractTikTokVideoId,
   extractTikTokMediaId,
   normalizeTikTokPageUrl,
   resolveTikTokVideo,
+  fetchTikTokThumbnail,
 }

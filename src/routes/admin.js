@@ -9,7 +9,7 @@ const {
   validateRequiredOptions,
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
-const { resolveTikTokVideo } = require('../utils/tiktokUrl')
+const { resolveTikTokVideo, fetchTikTokThumbnail } = require('../utils/tiktokUrl')
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -1502,7 +1502,7 @@ router.get('/showcase-clips', auth, admin, async (req, res) => {
     const pool = getPool()
     const result = await pool.query(
       `
-        SELECT id, tiktok_url, video_id, title, sort_order, is_active, created_at, updated_at
+        SELECT id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
         FROM showcase_clips
         ORDER BY sort_order ASC, created_at DESC
       `
@@ -1532,13 +1532,15 @@ router.post('/showcase-clips', auth, admin, async (req, res) => {
     const orderRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM showcase_clips`)
     const sort_order = Number(orderRes.rows[0]?.next_order) || 1
 
+    const thumbnail_url = await fetchTikTokThumbnail(resolved.tiktok_url)
+
     const result = await pool.query(
       `
-        INSERT INTO showcase_clips (tiktok_url, video_id, title, sort_order, is_active)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, tiktok_url, video_id, title, sort_order, is_active, created_at, updated_at
+        INSERT INTO showcase_clips (tiktok_url, video_id, title, thumbnail_url, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [resolved.tiktok_url, resolved.video_id, title, sort_order, is_active]
+      [resolved.tiktok_url, resolved.video_id, title, thumbnail_url, sort_order, is_active]
     )
 
     res.status(201).json({ success: true, clip: result.rows[0] })
@@ -1565,6 +1567,7 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
 
     let tiktok_url = existing.rows[0].tiktok_url
     let video_id = existing.rows[0].video_id
+    let thumbnail_url = existing.rows[0].thumbnail_url
 
     if (has('tiktok_url')) {
       const inputUrl = String(req.body.tiktok_url || '').trim()
@@ -1577,6 +1580,7 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
       }
       tiktok_url = resolved.tiktok_url
       video_id = resolved.video_id
+      thumbnail_url = await fetchTikTokThumbnail(resolved.tiktok_url)
     }
 
     const title = has('title')
@@ -1598,13 +1602,14 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
           tiktok_url = $1,
           video_id = $2,
           title = $3,
-          is_active = $4,
-          sort_order = $5,
+          thumbnail_url = $4,
+          is_active = $5,
+          sort_order = $6,
           updated_at = NOW()
-        WHERE id = $6
-        RETURNING id, tiktok_url, video_id, title, sort_order, is_active, created_at, updated_at
+        WHERE id = $7
+        RETURNING id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [tiktok_url, video_id, title, is_active, sort_order, req.params.id]
+      [tiktok_url, video_id, title, thumbnail_url, is_active, sort_order, req.params.id]
     )
 
     res.json({ success: true, clip: result.rows[0] })
