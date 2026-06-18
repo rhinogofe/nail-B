@@ -7,8 +7,19 @@ const { ensureSchema } = require('./db/ensureSchema')
 
 const app = express()
 
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean)
+
 app.use(cors({
-  origin:      process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true)
+      return
+    }
+    callback(null, false)
+  },
   credentials: true,
 }))
 app.use(express.json())
