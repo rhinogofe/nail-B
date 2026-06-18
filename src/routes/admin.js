@@ -1621,6 +1621,38 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
   }
 })
 
+router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const existing = await pool.query(
+      `SELECT id, tiktok_url FROM showcase_clips WHERE id = $1`,
+      [req.params.id]
+    )
+    if (!existing.rows.length) {
+      return res.status(404).json({ error: 'ไม่พบคลิป' })
+    }
+
+    const thumbnail_url = await fetchTikTokThumbnail(existing.rows[0].tiktok_url)
+    if (!thumbnail_url) {
+      return res.status(502).json({ error: 'ดึงรูปปกจาก TikTok ไม่สำเร็จ ลองใหม่ภายหลัง' })
+    }
+
+    const result = await pool.query(
+      `
+        UPDATE showcase_clips
+        SET thumbnail_url = $1, updated_at = NOW()
+        WHERE id = $2
+        RETURNING id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
+      `,
+      [thumbnail_url, req.params.id]
+    )
+
+    res.json({ success: true, message: 'ดึงรูปปกแล้ว', clip: result.rows[0] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.delete('/showcase-clips/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()

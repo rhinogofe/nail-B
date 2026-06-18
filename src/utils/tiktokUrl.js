@@ -24,6 +24,9 @@ function normalizeTikTokPageUrl(url) {
   }
 }
 
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
 async function resolveTikTokVideo(inputUrl) {
   const trimmed = String(inputUrl || '').trim()
   if (!trimmed) return null
@@ -40,7 +43,7 @@ async function resolveTikTokVideo(inputUrl) {
       const response = await fetch(trimmed, {
         redirect: 'follow',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; NailBooking/1.0)',
+          'User-Agent': BROWSER_UA,
         },
       })
       pageUrl = normalizeTikTokPageUrl(response.url)
@@ -65,13 +68,21 @@ async function resolveTikTokVideo(inputUrl) {
   }
 }
 
-async function fetchTikTokThumbnail(tiktokUrl) {
+function decodeOgImage(value) {
+  return String(value || '')
+    .replace(/\\u002F/g, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&')
+}
+
+async function fetchTikTokThumbnailFromOembed(tiktokUrl) {
   try {
     const response = await fetch(
       `https://www.tiktok.com/oembed?url=${encodeURIComponent(tiktokUrl)}`,
       {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; NailBooking/1.0)',
+          'User-Agent': BROWSER_UA,
+          Accept: 'application/json',
         },
       }
     )
@@ -81,6 +92,60 @@ async function fetchTikTokThumbnail(tiktokUrl) {
   } catch {
     return null
   }
+}
+
+async function fetchTikTokThumbnailFromOg(tiktokUrl) {
+  try {
+    const response = await fetch(tiktokUrl, {
+      redirect: 'follow',
+      headers: {
+        'User-Agent': BROWSER_UA,
+        'Accept-Language': 'en-US,en;q=0.9,th;q=0.8',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    })
+    if (!response.ok) return null
+    const html = await response.text()
+    const patterns = [
+      /property="og:image"\s+content="([^"]+)"/i,
+      /content="([^"]+)"\s+property="og:image"/i,
+      /"cover":"(https:\\\\[^"]+)"/,
+      /"originCover":"(https:\\\\[^"]+)"/,
+    ]
+    for (const pattern of patterns) {
+      const match = html.match(pattern)
+      if (match?.[1]) {
+        const url = decodeOgImage(match[1])
+        if (url.startsWith('http')) return url
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function oembedUrlForThumbnail(tiktokUrl) {
+  const mediaId = extractTikTokMediaId(tiktokUrl)
+  if (!mediaId) return [tiktokUrl]
+  const videoUrl = `https://www.tiktok.com/video/${mediaId}`
+  if (tiktokUrl.includes('/photo/') || !tiktokUrl.includes('/video/')) {
+    return [videoUrl, tiktokUrl]
+  }
+  return [tiktokUrl, videoUrl]
+}
+
+async function fetchTikTokThumbnail(tiktokUrl) {
+  const candidates = oembedUrlForThumbnail(tiktokUrl)
+  for (const url of candidates) {
+    const fromOembed = await fetchTikTokThumbnailFromOembed(url)
+    if (fromOembed) return fromOembed
+  }
+  for (const url of candidates) {
+    const fromOg = await fetchTikTokThumbnailFromOg(url)
+    if (fromOg) return fromOg
+  }
+  return null
 }
 
 module.exports = {
