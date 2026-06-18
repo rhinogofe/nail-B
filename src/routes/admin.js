@@ -9,6 +9,7 @@ const {
   validateRequiredOptions,
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
+const { resolveTikTokVideo } = require('../utils/tiktokUrl')
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -1492,6 +1493,182 @@ router.delete('/service-locations/:id', auth, admin, async (req, res) => {
     }
     res.json({ success: true, message: 'ลบสถานที่แล้ว' })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/showcase-clips', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        SELECT id, tiktok_url, video_id, title, sort_order, is_active, created_at, updated_at
+        FROM showcase_clips
+        ORDER BY sort_order ASC, created_at DESC
+      `
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/showcase-clips', auth, admin, async (req, res) => {
+  const tiktokUrl = String(req.body?.tiktok_url || '').trim()
+  const title = String(req.body?.title || '').trim() || null
+  const is_active = req.body?.is_active !== false
+
+  if (!tiktokUrl) {
+    return res.status(400).json({ error: 'กรุณาวางลิงก์คลิป TikTok' })
+  }
+
+  try {
+    const resolved = await resolveTikTokVideo(tiktokUrl)
+    if (!resolved) {
+      return res.status(400).json({ error: 'ลิงก์ TikTok ไม่ถูกต้อง กรุณาใช้ลิงก์คลิปหรือโพสต์รูป เช่น .../video/123 หรือ .../photo/123' })
+    }
+
+    const pool = getPool()
+    const orderRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM showcase_clips`)
+    const sort_order = Number(orderRes.rows[0]?.next_order) || 1
+
+    const result = await pool.query(
+      `
+        INSERT INTO showcase_clips (tiktok_url, video_id, title, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, tiktok_url, video_id, title, sort_order, is_active, created_at, updated_at
+      `,
+      [resolved.tiktok_url, resolved.video_id, title, sort_order, is_active]
+    )
+
+    res.status(201).json({ success: true, clip: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'คลิปนี้มีในระบบแล้ว' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
+  const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key)
+  if (!has('tiktok_url') && !has('title') && !has('is_active') && !has('sort_order')) {
+    return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
+  }
+
+  try {
+    const pool = getPool()
+    const existing = await pool.query(`SELECT * FROM showcase_clips WHERE id = $1`, [req.params.id])
+    if (!existing.rows.length) {
+      return res.status(404).json({ error: 'ไม่พบคลิป' })
+    }
+
+    let tiktok_url = existing.rows[0].tiktok_url
+    let video_id = existing.rows[0].video_id
+
+    if (has('tiktok_url')) {
+      const inputUrl = String(req.body.tiktok_url || '').trim()
+      if (!inputUrl) {
+        return res.status(400).json({ error: 'กรุณาวางลิงก์คลิป TikTok' })
+      }
+      const resolved = await resolveTikTokVideo(inputUrl)
+      if (!resolved) {
+        return res.status(400).json({ error: 'ลิงก์ TikTok ไม่ถูกต้อง' })
+      }
+      tiktok_url = resolved.tiktok_url
+      video_id = resolved.video_id
+    }
+
+    const title = has('title')
+      ? (String(req.body.title || '').trim() || null)
+      : existing.rows[0].title
+    const is_active = has('is_active') ? Boolean(req.body.is_active) : existing.rows[0].is_active
+    const sort_order = has('sort_order')
+      ? Number(req.body.sort_order)
+      : existing.rows[0].sort_order
+
+    if (has('sort_order') && !Number.isFinite(sort_order)) {
+      return res.status(400).json({ error: 'sort_order ไม่ถูกต้อง' })
+    }
+
+    const result = await pool.query(
+      `
+        UPDATE showcase_clips
+        SET
+          tiktok_url = $1,
+          video_id = $2,
+          title = $3,
+          is_active = $4,
+          sort_order = $5,
+          updated_at = NOW()
+        WHERE id = $6
+        RETURNING id, tiktok_url, video_id, title, sort_order, is_active, created_at, updated_at
+      `,
+      [tiktok_url, video_id, title, is_active, sort_order, req.params.id]
+    )
+
+    res.json({ success: true, clip: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'คลิปนี้มีในระบบแล้ว' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/showcase-clips/:id', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(`DELETE FROM showcase_clips WHERE id = $1`, [req.params.id])
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบคลิป' })
+    }
+    res.json({ success: true, message: 'ลบคลิปแล้ว' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/showcase-clips/:id/move', auth, admin, async (req, res) => {
+  const direction = req.body?.direction === 'down' ? 'down' : 'up'
+
+  try {
+    await withTransaction(async (client) => {
+      const allRes = await client.query(
+        `
+          SELECT id, sort_order
+          FROM showcase_clips
+          ORDER BY sort_order ASC, created_at ASC
+          FOR UPDATE
+        `
+      )
+      const list = allRes.rows
+      const index = list.findIndex((row) => row.id === req.params.id)
+      if (index === -1) {
+        const err = new Error('ไม่พบคลิป')
+        err.status = 404
+        throw err
+      }
+
+      const swapIndex = direction === 'up' ? index - 1 : index + 1
+      if (swapIndex < 0 || swapIndex >= list.length) return
+
+      const current = list[index]
+      const neighbor = list[swapIndex]
+
+      await client.query(
+        `UPDATE showcase_clips SET sort_order = $1, updated_at = NOW() WHERE id = $2`,
+        [neighbor.sort_order, current.id]
+      )
+      await client.query(
+        `UPDATE showcase_clips SET sort_order = $1, updated_at = NOW() WHERE id = $2`,
+        [current.sort_order, neighbor.id]
+      )
+    })
+
+    res.json({ success: true, message: 'จัดลำดับแล้ว' })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })

@@ -311,14 +311,47 @@ router.get('/my', auth, async (req, res) => {
     const pool = getPool()
     const result = await pool.query(
       `
-        SELECT id, booking_date, start_hour, end_hour, status, created_at, completed_at
-        FROM bookings
-        WHERE user_id = $1
-        ORDER BY booking_date DESC, start_hour DESC
+        SELECT
+          b.id,
+          b.booking_date,
+          b.start_hour,
+          b.end_hour,
+          b.status,
+          b.created_at,
+          b.completed_at,
+          b.total
+        FROM bookings b
+        WHERE b.user_id = $1
+        ORDER BY b.booking_date DESC, b.start_hour DESC
       `,
       [req.user.id]
     )
-    res.json(result.rows)
+
+    const optionsResult = await pool.query(
+      `
+        SELECT b.id AS booking_id, n.id AS option_id, n.option_name
+        FROM bookings b
+        JOIN booking_nailoptions bn ON bn.booking_id = b.id
+        JOIN nailoption n ON n.id = bn.nailoption_id
+        WHERE b.user_id = $1
+        ORDER BY b.booking_date DESC, b.start_hour DESC, n.option_name ASC
+      `,
+      [req.user.id]
+    )
+
+    const optionsByBookingId = {}
+    for (const row of optionsResult.rows) {
+      if (!optionsByBookingId[row.booking_id]) optionsByBookingId[row.booking_id] = []
+      optionsByBookingId[row.booking_id].push({
+        id: row.option_id,
+        option_name: row.option_name,
+      })
+    }
+
+    res.json(result.rows.map((item) => ({
+      ...item,
+      nail_options: optionsByBookingId[item.id] || [],
+    })))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

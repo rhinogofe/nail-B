@@ -93,6 +93,18 @@ async function ensureSchema() {
 
     CREATE UNIQUE INDEX IF NOT EXISTS ux_coupons_coupon_code
       ON coupons (coupon_code);
+
+    CREATE TABLE IF NOT EXISTS showcase_clips (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tiktok_url TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      title TEXT,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (video_id)
+    );
   `)
 
   await pool.query(`
