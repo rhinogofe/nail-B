@@ -53,6 +53,16 @@ async function ensureSchema() {
       )
     );
 
+    CREATE TABLE IF NOT EXISTS booking_extra_hours (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      extra_date DATE NOT NULL,
+      start_hour SMALLINT NOT NULL,
+      end_hour SMALLINT NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (start_hour >= 0 AND end_hour <= 24 AND start_hour < end_hour)
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       setting_key TEXT PRIMARY KEY,
       setting_value TEXT,

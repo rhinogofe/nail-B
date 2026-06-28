@@ -10,6 +10,7 @@ const {
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
 const { resolveTikTokVideo, fetchTikTokThumbnail } = require('../utils/tiktokUrl')
+const { validateBookingStartHour } = require('../utils/bookingHours')
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -324,9 +325,9 @@ router.post('/bookings', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
-    const { openHour, lastBookingHour } = await getShopHours(pool)
-    if (startHourNum < openHour || startHourNum > lastBookingHour) {
-      return res.status(400).json({ error: `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour}` })
+    const hourError = await validateBookingStartHour(pool, booking_date, startHourNum)
+    if (hourError) {
+      return res.status(400).json({ error: hourError })
     }
 
     const optionIds = normalizeOptionIds(nailoption_ids)
@@ -696,6 +697,76 @@ router.delete('/blocks/:id', auth, admin, async (req, res) => {
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการปิดวันเวลา' })
+    }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/extra-hours', auth, admin, async (req, res) => {
+  const month = req.query.month || new Date().toISOString().slice(0, 7)
+  const [y, m] = month.split('-').map(Number)
+  if (!y || !m) return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
+
+  const fromDate = new Date(y, m - 1, 1)
+  const toDate = new Date(y, m, 0)
+  const from = `${fromDate.getFullYear()}-${String(fromDate.getMonth() + 1).padStart(2, '0')}-${String(fromDate.getDate()).padStart(2, '0')}`
+  const to = `${toDate.getFullYear()}-${String(toDate.getMonth() + 1).padStart(2, '0')}-${String(toDate.getDate()).padStart(2, '0')}`
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        SELECT id, extra_date, start_hour, end_hour, note, created_at
+        FROM booking_extra_hours
+        WHERE extra_date BETWEEN $1 AND $2
+        ORDER BY extra_date ASC, start_hour ASC
+      `,
+      [from, to]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/extra-hours', auth, admin, async (req, res) => {
+  const { extra_date, start_hour, end_hour, note } = req.body
+  if (!extra_date) return res.status(400).json({ error: 'ต้องระบุ extra_date' })
+  if (start_hour == null || end_hour == null) {
+    return res.status(400).json({ error: 'ต้องระบุ start_hour และ end_hour' })
+  }
+  if (start_hour < 0 || end_hour > 24 || end_hour <= start_hour) {
+    return res.status(400).json({ error: 'ช่วงเวลาเปิดเพิ่มไม่ถูกต้อง' })
+  }
+  if (end_hour - start_hour < 2) {
+    return res.status(400).json({ error: 'ช่วงเปิดเพิ่มต้องยาวอย่างน้อย 2 ชั่วโมง (สำหรับคิว 2 ชม.)' })
+  }
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        INSERT INTO booking_extra_hours (extra_date, start_hour, end_hour, note)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, extra_date, start_hour, end_hour, note, created_at
+      `,
+      [extra_date, start_hour, end_hour, note || null]
+    )
+    res.status(201).json({ success: true, extra: result.rows[0] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/extra-hours/:id', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(`DELETE FROM booking_extra_hours WHERE id = $1`, [req.params.id])
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบรายการเปิดเพิ่ม' })
     }
     res.json({ success: true })
   } catch (err) {

@@ -7,18 +7,7 @@ const {
   validateOptionIds,
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
-
-async function getShopHours(pool) {
-  const result = await pool.query(
-    `SELECT setting_key, setting_value FROM app_settings
-     WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
-  )
-  const map = Object.fromEntries(result.rows.map(r => [r.setting_key, Number(r.setting_value)]))
-  return {
-    openHour: map.shop_open_hour ?? 9,
-    lastBookingHour: map.shop_last_booking_hour ?? 18,
-  }
-}
+const { getShopHours, validateBookingStartHour } = require('../utils/bookingHours')
 
 router.get('/shop-hours', auth, async (req, res) => {
   try {
@@ -173,6 +162,27 @@ router.get('/blocks', auth, async (req, res) => {
   }
 })
 
+router.get('/extra-hours', auth, async (req, res) => {
+  const { from, to } = req.query
+  if (!from || !to) return res.status(400).json({ error: 'ต้องระบุ from และ to' })
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `
+        SELECT id, extra_date, start_hour, end_hour, note
+        FROM booking_extra_hours
+        WHERE extra_date BETWEEN $1 AND $2
+        ORDER BY extra_date ASC, start_hour ASC
+      `,
+      [from, to]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.post('/', auth, async (req, res) => {
   const { booking_date, start_hour, option_ids } = req.body
   if (!booking_date || start_hour == null)
@@ -183,13 +193,12 @@ router.post('/', auth, async (req, res) => {
 
   try {
     const pool = getPool()
-    const { openHour, lastBookingHour } = await getShopHours(pool)
     const { bookUntilDate } = await getAdvanceSettings(pool)
     const dateError = validateBookingDateRange(booking_date, bookUntilDate)
     if (dateError) return res.status(400).json({ error: dateError })
 
-    if (start_hour < openHour || start_hour > lastBookingHour)
-      return res.status(400).json({ error: `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour}` })
+    const hourError = await validateBookingStartHour(pool, booking_date, start_hour)
+    if (hourError) return res.status(400).json({ error: hourError })
 
     const uniqueOptionIds = [...new Set(option_ids.map(String))]
     const isValidOptions = await validateOptionIds(pool, uniqueOptionIds, booking_date)
