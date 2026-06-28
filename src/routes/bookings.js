@@ -8,6 +8,11 @@ const {
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
 const { getShopHours, validateBookingStartHour } = require('../utils/bookingHours')
+const {
+  getUnpaidExpireSettings,
+  isBookingExpired,
+  expireUnpaidBookings,
+} = require('../utils/unpaidExpire')
 
 router.get('/shop-hours', auth, async (req, res) => {
   try {
@@ -58,6 +63,19 @@ router.get('/deposit-setting', auth, async (req, res) => {
   }
 })
 
+router.get('/unpaid-expire-setting', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getUnpaidExpireSettings(pool)
+    res.json({
+      enabled: settings.enabled,
+      expire_hours: settings.expireHours,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/options', auth, async (req, res) => {
   const { date } = req.query
   if (date && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
@@ -102,6 +120,7 @@ router.get('/', auth, async (req, res) => {
 
   try {
     const pool = getPool()
+    await expireUnpaidBookings(pool)
     const result = await pool.query(
       `
         SELECT
@@ -109,6 +128,7 @@ router.get('/', auth, async (req, res) => {
           b.start_hour,
           b.end_hour,
           b.status,
+          b.created_at,
           u.name        AS user_name,
           u.avatar_url  AS user_avatar,
           CASE WHEN b.user_id = $2 THEN true ELSE false END AS is_mine
@@ -193,6 +213,7 @@ router.post('/', auth, async (req, res) => {
 
   try {
     const pool = getPool()
+    await expireUnpaidBookings(pool)
     const { bookUntilDate } = await getAdvanceSettings(pool)
     const dateError = validateBookingDateRange(booking_date, bookUntilDate)
     if (dateError) return res.status(400).json({ error: dateError })
@@ -292,6 +313,49 @@ router.post('/', auth, async (req, res) => {
   }
 })
 
+router.get('/:id/payment-info', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    await expireUnpaidBookings(pool)
+    const settings = await getUnpaidExpireSettings(pool)
+
+    const result = await pool.query(
+      `
+        SELECT id, booking_date, start_hour, end_hour, status, created_at
+        FROM bookings
+        WHERE id = $1 AND user_id = $2
+      `,
+      [req.params.id, req.user.id]
+    )
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'ไม่พบคิว' })
+    }
+
+    const booking = result.rows[0]
+    const expired = isBookingExpired(booking.created_at, settings.expireHours, settings.enabled)
+
+    if (expired && booking.status === 'awaiting_payment') {
+      await pool.query(
+        `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND status = 'awaiting_payment'`,
+        [booking.id]
+      )
+      booking.status = 'cancelled'
+    }
+
+    res.json({
+      booking,
+      unpaid_expire: {
+        enabled: settings.enabled,
+        expire_hours: settings.expireHours,
+      },
+      is_expired: booking.status === 'cancelled' && expired,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.delete('/:id', auth, async (req, res) => {
   try {
     const pool = getPool()
@@ -318,6 +382,7 @@ router.delete('/:id', auth, async (req, res) => {
 router.get('/my', auth, async (req, res) => {
   try {
     const pool = getPool()
+    await expireUnpaidBookings(pool)
     const result = await pool.query(
       `
         SELECT

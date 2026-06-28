@@ -157,7 +157,9 @@ async function ensureSchema() {
       ('shop_open_hour',         '9'),
       ('shop_last_booking_hour', '18'),
       ('book_advance_days',      '30'),
-      ('booking_display_mode',   'normal')
+      ('booking_display_mode',   'normal'),
+      ('unpaid_auto_cancel_enabled', 'true'),
+      ('unpaid_expire_hours',        '24')
     ON CONFLICT (setting_key) DO NOTHING
   `)
 

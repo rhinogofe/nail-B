@@ -11,6 +11,13 @@ const {
 } = require('../utils/bookingOptions')
 const { resolveTikTokVideo, fetchTikTokThumbnail } = require('../utils/tiktokUrl')
 const { validateBookingStartHour } = require('../utils/bookingHours')
+const {
+  getUnpaidExpireSettings,
+  isBookingExpired,
+  expireUnpaidBookings,
+  MIN_HOURS,
+  MAX_HOURS,
+} = require('../utils/unpaidExpire')
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -117,6 +124,7 @@ router.get('/bookings', auth, admin, async (req, res) => {
   const { date, status } = req.query
   try {
     const pool = getPool()
+    await expireUnpaidBookings(pool)
     const params = []
     let where = 'WHERE 1=1'
 
@@ -809,6 +817,45 @@ router.patch('/settings/deposit', auth, admin, async (req, res) => {
   }
 })
 
+router.get('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getUnpaidExpireSettings(pool)
+    res.json({
+      enabled: settings.enabled,
+      expire_hours: settings.expireHours,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
+  const enabled = req.body?.enabled !== false && req.body?.enabled !== 'false'
+  const hours = Number(req.body?.expire_hours)
+  if (!Number.isInteger(hours) || hours < MIN_HOURS || hours > MAX_HOURS) {
+    return res.status(400).json({
+      error: `expire_hours ต้องเป็นจำนวนเต็มระหว่าง ${MIN_HOURS}-${MAX_HOURS}`,
+    })
+  }
+
+  try {
+    const pool = getPool()
+    await pool.query(
+      `
+        INSERT INTO app_settings (setting_key, setting_value)
+        VALUES ('unpaid_auto_cancel_enabled', $1), ('unpaid_expire_hours', $2)
+        ON CONFLICT (setting_key) DO UPDATE
+          SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
+      `,
+      [enabled ? 'true' : 'false', String(hours)]
+    )
+    res.json({ success: true, enabled, expire_hours: hours })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/settings/shop-hours', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
@@ -940,6 +987,26 @@ router.patch('/coupons/use', auth, admin, async (req, res) => {
 router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    await expireUnpaidBookings(pool)
+    const settings = await getUnpaidExpireSettings(pool)
+
+    const found = await pool.query(
+      `SELECT id, status, created_at FROM bookings WHERE id = $1`,
+      [req.params.id]
+    )
+    const row = found.rows[0]
+    if (!row || row.status !== 'awaiting_payment') {
+      return res.status(404).json({ error: 'ไม่พบคิวที่รอยืนยันชำระเงิน' })
+    }
+
+    if (isBookingExpired(row.created_at, settings.expireHours, settings.enabled)) {
+      await pool.query(
+        `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND status = 'awaiting_payment'`,
+        [req.params.id]
+      )
+      return res.status(409).json({ error: 'คิวหมดเวลาชำระแล้ว ถูกยกเลิกอัตโนมัติ' })
+    }
+
     const result = await pool.query(
       `
         UPDATE bookings

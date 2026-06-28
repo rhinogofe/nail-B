@@ -4,6 +4,8 @@ const express = require('express')
 const cors    = require('cors')
 const { passport } = require('./config/passport')
 const { ensureSchema } = require('./db/ensureSchema')
+const { getPool } = require('./db/pool')
+const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 
 const app = express()
 
@@ -50,6 +52,16 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`🚀 Server running at http://localhost:${PORT}`)
   })
+
+  setInterval(async () => {
+    try {
+      const pool = getPool()
+      const count = await expireUnpaidBookings(pool)
+      if (count > 0) console.log(`⏱️ Auto-cancelled ${count} unpaid booking(s)`)
+    } catch (err) {
+      console.error('expireUnpaidBookings:', err.message)
+    }
+  }, 5 * 60 * 1000)
 }
 
 startServer()
