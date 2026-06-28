@@ -122,12 +122,32 @@ async function ensureSchema() {
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS show_to_date DATE;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS is_required BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS color TEXT;
+    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total NUMERIC(10, 2);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
   `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)
+
+  const orderCheck = await pool.query(`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE sort_order > 0)::int AS ordered
+    FROM nailoption
+  `)
+  if (orderCheck.rows[0].total > 0 && orderCheck.rows[0].ordered === 0) {
+    await pool.query(`
+      WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, option_name ASC) AS rn
+        FROM nailoption
+      )
+      UPDATE nailoption n
+      SET sort_order = ranked.rn
+      FROM ranked
+      WHERE n.id = ranked.id
+    `)
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS service_locations (

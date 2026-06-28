@@ -101,10 +101,7 @@ router.get('/options', auth, async (req, res) => {
         FROM nailoption
         WHERE is_active = true
         ${dateFilter}
-        ORDER BY
-          CASE WHEN description IS NULL OR TRIM(description) = '' THEN 1 ELSE 0 END,
-          description ASC,
-          option_name ASC
+        ORDER BY sort_order ASC, option_name ASC
       `,
       params
     )

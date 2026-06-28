@@ -1446,9 +1446,9 @@ router.get('/nailoptions', auth, admin, async (req, res) => {
     const pool = getPool()
     const result = await pool.query(`
       SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
-             show_from_date, show_to_date, created_at, updated_at
+             show_from_date, show_to_date, sort_order, created_at, updated_at
       FROM nailoption
-      ORDER BY option_name ASC
+      ORDER BY sort_order ASC, created_at ASC, option_name ASC
     `)
     res.json(result.rows)
   } catch (err) {
@@ -1482,17 +1482,19 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const orderRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM nailoption`)
+    const sort_order = Number(orderRes.rows[0]?.next_order) || 1
     const result = await pool.query(
       `
         INSERT INTO nailoption (
           option_name, description, price, duration_min, is_active, is_required, color,
-          show_from_date, show_to_date
+          show_from_date, show_to_date, sort_order
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
-                  show_from_date, show_to_date, created_at, updated_at
+                  show_from_date, show_to_date, sort_order, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed]
+      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, sort_order]
     )
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
@@ -1542,7 +1544,7 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
           updated_at = NOW()
         WHERE id = $10
         RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
-                  show_from_date, show_to_date, created_at, updated_at
+                  show_from_date, show_to_date, sort_order, created_at, updated_at
       `,
       [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, req.params.id]
     )
@@ -1553,6 +1555,82 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
 
     res.json({ success: true, option: result.rows[0] })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
+  const direction = req.body?.direction === 'down' ? 'down' : 'up'
+  const scopeDate = req.body?.date
+  const scopeEveryDay = req.body?.scope === 'everyday'
+
+  if (scopeDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(scopeDate))) {
+    return res.status(400).json({ error: 'date ต้องเป็น YYYY-MM-DD' })
+  }
+
+  try {
+    await withTransaction(async (client) => {
+      let listRes
+      if (scopeEveryDay) {
+        listRes = await client.query(
+          `
+            SELECT id, sort_order
+            FROM nailoption
+            WHERE show_from_date IS NULL AND show_to_date IS NULL
+            ORDER BY sort_order ASC, created_at ASC, option_name ASC
+            FOR UPDATE
+          `
+        )
+      } else if (scopeDate) {
+        listRes = await client.query(
+          `
+            SELECT id, sort_order
+            FROM nailoption
+            WHERE (show_from_date IS NULL OR show_from_date <= $1)
+              AND (show_to_date IS NULL OR show_to_date >= $1)
+            ORDER BY sort_order ASC, created_at ASC, option_name ASC
+            FOR UPDATE
+          `,
+          [scopeDate]
+        )
+      } else {
+        listRes = await client.query(
+          `
+            SELECT id, sort_order
+            FROM nailoption
+            ORDER BY sort_order ASC, created_at ASC, option_name ASC
+            FOR UPDATE
+          `
+        )
+      }
+
+      const list = listRes.rows
+      const index = list.findIndex((row) => row.id === req.params.id)
+      if (index === -1) {
+        const err = new Error('ไม่พบรายการบริการในรายการที่จัดลำดับ')
+        err.status = 404
+        throw err
+      }
+
+      const swapIndex = direction === 'up' ? index - 1 : index + 1
+      if (swapIndex < 0 || swapIndex >= list.length) return
+
+      const current = list[index]
+      const neighbor = list[swapIndex]
+
+      await client.query(`UPDATE nailoption SET sort_order = $1, updated_at = NOW() WHERE id = $2`, [
+        neighbor.sort_order,
+        current.id,
+      ])
+      await client.query(`UPDATE nailoption SET sort_order = $1, updated_at = NOW() WHERE id = $2`, [
+        current.sort_order,
+        neighbor.id,
+      ])
+    })
+
+    res.json({ success: true, message: 'จัดลำดับแล้ว' })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
