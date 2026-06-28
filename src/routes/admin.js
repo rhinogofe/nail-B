@@ -1106,6 +1106,68 @@ router.get('/users', auth, admin, async (req, res) => {
   }
 })
 
+router.get('/users/:id/bookings', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const userRes = await pool.query(
+      `SELECT id, name, email, provider, provider_id, total_points, created_at FROM users WHERE id = $1`,
+      [req.params.id]
+    )
+    if (!userRes.rows[0]) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
+    }
+
+    const bookingsRes = await pool.query(
+      `
+        SELECT
+          b.id,
+          b.booking_date,
+          b.start_hour,
+          b.end_hour,
+          b.status,
+          b.created_at,
+          b.completed_at,
+          b.total
+        FROM bookings b
+        WHERE b.user_id = $1
+        ORDER BY b.booking_date DESC, b.start_hour DESC
+      `,
+      [req.params.id]
+    )
+
+    const optionsRes = await pool.query(
+      `
+        SELECT b.id AS booking_id, n.id AS option_id, n.option_name
+        FROM bookings b
+        JOIN booking_nailoptions bn ON bn.booking_id = b.id
+        JOIN nailoption n ON n.id = bn.nailoption_id
+        WHERE b.user_id = $1
+        ORDER BY b.booking_date DESC, b.start_hour DESC, n.option_name ASC
+      `,
+      [req.params.id]
+    )
+
+    const optionsByBookingId = {}
+    for (const row of optionsRes.rows) {
+      if (!optionsByBookingId[row.booking_id]) optionsByBookingId[row.booking_id] = []
+      optionsByBookingId[row.booking_id].push({
+        id: row.option_id,
+        option_name: row.option_name,
+      })
+    }
+
+    res.json({
+      user: userRes.rows[0],
+      bookings: bookingsRes.rows.map((item) => ({
+        ...item,
+        nail_options: optionsByBookingId[item.id] || [],
+      })),
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
   const { is_admin } = req.body
   if (req.params.id === req.user.id && !is_admin) {
