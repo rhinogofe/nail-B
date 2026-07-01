@@ -378,7 +378,8 @@ router.post('/bookings', auth, admin, async (req, res) => {
             status = $2,
             completed_at = $3,
             total = $4,
-            end_hour = COALESCE(end_hour, $5)
+            end_hour = COALESCE(end_hour, $5),
+            created_at = CASE WHEN $2 = 'awaiting_payment' THEN NOW() ELSE created_at END
           WHERE booking_date = $6
             AND start_hour = $7
             AND status = 'cancelled'
@@ -453,7 +454,10 @@ router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
       await client.query(
         `
           UPDATE bookings
-          SET status = $1, completed_at = NULL
+          SET
+            status = $1,
+            completed_at = NULL,
+            created_at = CASE WHEN $1 = 'awaiting_payment' THEN NOW() ELSE created_at END
           WHERE id = $2 AND status = 'cancelled'
         `,
         [targetStatus, row.id]
@@ -463,7 +467,7 @@ router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
     const message =
       targetStatus === 'pending'
         ? 'คืนสถานะจองแล้ว (ชำระแล้ว / รอให้บริการ)'
-        : 'คืนสถานะจองแล้ว (รอชำระเงิน)'
+        : 'คืนสถานะจองแล้ว (รอชำระเงิน · เริ่มนับเวลาชำระใหม่)'
 
     res.json({ success: true, message })
   } catch (err) {
@@ -1027,6 +1031,33 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
   }
 })
 
+router.patch('/bookings/:id/revert-payment', auth, admin, async (req, res) => {
+  try {
+    const result = await getPool().query(
+      `
+        UPDATE bookings
+        SET
+          status = 'awaiting_payment',
+          created_at = NOW()
+        WHERE id = $1
+          AND status = 'pending'
+      `,
+      [req.params.id]
+    )
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบคิวที่ชำระแล้ว / รอให้บริการ' })
+    }
+
+    res.json({
+      success: true,
+      message: 'เปลี่ยนเป็นรอชำระเงินแล้ว · เริ่มนับเวลาชำระใหม่',
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
   const total = Number(req.body?.total)
   if (!Number.isFinite(total) || total < 0) {
@@ -1083,16 +1114,35 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
     return res.status(400).json({ error: 'nailoption_ids ต้องเป็น array' })
   }
 
+  const hasUserId = 'user_id' in req.body
+  const userId = hasUserId ? req.body.user_id : null
+  if (hasUserId && !userId) {
+    return res.status(400).json({ error: 'กรุณาเลือกลูกค้า' })
+  }
+
+  const hasStartHour = 'start_hour' in req.body
+  const startHourNum = hasStartHour ? Number(req.body.start_hour) : null
+  if (hasStartHour && !Number.isInteger(startHourNum)) {
+    return res.status(400).json({ error: 'start_hour ไม่ถูกต้อง' })
+  }
+
   try {
     const booking = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, status FROM bookings WHERE id = $1 FOR UPDATE`,
+        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 FOR UPDATE`,
         [req.params.id]
       )
       if (existing.rowCount === 0) throw { status: 404, message: 'ไม่พบคิว' }
       const row = existing.rows[0]
       if (row.status === 'cancelled') {
         throw { status: 404, message: 'ไม่พบคิว หรือไม่สามารถแก้ไขได้' }
+      }
+
+      if (hasUserId) {
+        const userRes = await client.query(`SELECT id FROM users WHERE id = $1`, [userId])
+        if (!userRes.rows.length) {
+          throw { status: 400, message: 'ไม่พบลูกค้าที่เลือก' }
+        }
       }
 
       const optionIds = hasOptions ? normalizeOptionIds(req.body.nailoption_ids) : null
@@ -1110,15 +1160,47 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         }
       }
 
+      if (hasStartHour) {
+        const hourError = await validateBookingStartHour(client, row.booking_date, startHourNum)
+        if (hourError) {
+          throw { status: 400, message: hourError }
+        }
+        if (startHourNum !== Number(row.start_hour)) {
+          await assertSlotAvailable(client, row.booking_date, startHourNum, req.params.id)
+        }
+      }
+
+      const updates = ['total = $1']
+      const params = [total]
+      let paramIdx = 2
+
+      if (hasUserId) {
+        updates.push(`user_id = $${paramIdx}`)
+        params.push(userId)
+        paramIdx += 1
+      }
+
+      if (hasStartHour) {
+        updates.push(`start_hour = $${paramIdx}`)
+        params.push(startHourNum)
+        paramIdx += 1
+        updates.push(`end_hour = $${paramIdx}`)
+        params.push(startHourNum + 2)
+        paramIdx += 1
+      }
+
+      params.push(req.params.id)
+      const idParam = paramIdx
+
       const result = await client.query(
         `
           UPDATE bookings
-          SET total = $1
-          WHERE id = $2
+          SET ${updates.join(', ')}
+          WHERE id = $${idParam}
             AND status != 'cancelled'
-          RETURNING id, booking_date, start_hour, end_hour, status, total, created_at, completed_at
+          RETURNING id, user_id, booking_date, start_hour, end_hour, status, total, created_at, completed_at
         `,
-        [total, req.params.id]
+        params
       )
 
       if (optionIds !== null) {

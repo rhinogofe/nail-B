@@ -270,7 +270,8 @@ router.post('/', auth, async (req, res) => {
         SET
           user_id = $1,
           status = 'awaiting_payment',
-          completed_at = NULL
+          completed_at = NULL,
+          created_at = NOW()
         WHERE booking_date = $2
           AND start_hour = $3
           AND status = 'cancelled'
