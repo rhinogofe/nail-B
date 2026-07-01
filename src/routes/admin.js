@@ -69,6 +69,27 @@ async function assertSlotAvailable(client, bookingDate, startHour, excludeId = n
   }
 }
 
+async function assertSlotNotBlocked(client, bookingDate, startHour) {
+  const blocked = await client.query(
+    `
+      SELECT id
+      FROM booking_blocks
+      WHERE block_date = $1
+        AND (
+          is_full_day = true
+          OR (start_hour < $3 AND end_hour > $2)
+        )
+      LIMIT 1
+    `,
+    [bookingDate, startHour, startHour + 2]
+  )
+  if (blocked.rows.length > 0) {
+    const err = new Error('ช่วงเวลานี้ร้านปิดรับคิว')
+    err.status = 409
+    throw err
+  }
+}
+
 async function fetchAdminBookingWithOptions(client, bookingId) {
   const result = await client.query(
     `
@@ -1126,6 +1147,12 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
     return res.status(400).json({ error: 'start_hour ไม่ถูกต้อง' })
   }
 
+  const hasBookingDate = 'booking_date' in req.body
+  const bookingDate = hasBookingDate ? String(req.body.booking_date) : null
+  if (hasBookingDate && !/^\d{4}-\d{2}-\d{2}$/.test(bookingDate)) {
+    return res.status(400).json({ error: 'รูปแบบวันที่ไม่ถูกต้อง' })
+  }
+
   try {
     const booking = await withTransaction(async (client) => {
       const existing = await client.query(
@@ -1137,6 +1164,11 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
       if (row.status === 'cancelled') {
         throw { status: 404, message: 'ไม่พบคิว หรือไม่สามารถแก้ไขได้' }
       }
+
+      const effectiveDate = hasBookingDate ? bookingDate : String(row.booking_date).slice(0, 10)
+      const effectiveStartHour = hasStartHour ? startHourNum : Number(row.start_hour)
+      const dateChanged = hasBookingDate && bookingDate !== String(row.booking_date).slice(0, 10)
+      const hourChanged = hasStartHour && startHourNum !== Number(row.start_hour)
 
       if (hasUserId) {
         const userRes = await client.query(`SELECT id FROM users WHERE id = $1`, [userId])
@@ -1154,19 +1186,20 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         if (!isValidOptions) {
           throw { status: 400, message: 'รายการบริการที่เลือกไม่ถูกต้อง' }
         }
-        const requiredError = await validateRequiredOptions(client, optionIds, row.booking_date)
+        const requiredError = await validateRequiredOptions(client, optionIds, effectiveDate)
         if (requiredError) {
           throw { status: 400, message: requiredError }
         }
       }
 
-      if (hasStartHour) {
-        const hourError = await validateBookingStartHour(client, row.booking_date, startHourNum)
+      if (hasStartHour || hasBookingDate) {
+        const hourError = await validateBookingStartHour(client, effectiveDate, effectiveStartHour)
         if (hourError) {
           throw { status: 400, message: hourError }
         }
-        if (startHourNum !== Number(row.start_hour)) {
-          await assertSlotAvailable(client, row.booking_date, startHourNum, req.params.id)
+        await assertSlotNotBlocked(client, effectiveDate, effectiveStartHour)
+        if (dateChanged || hourChanged) {
+          await assertSlotAvailable(client, effectiveDate, effectiveStartHour, req.params.id)
         }
       }
 
@@ -1180,12 +1213,22 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         paramIdx += 1
       }
 
+      if (hasBookingDate) {
+        updates.push(`booking_date = $${paramIdx}`)
+        params.push(bookingDate)
+        paramIdx += 1
+      }
+
       if (hasStartHour) {
         updates.push(`start_hour = $${paramIdx}`)
         params.push(startHourNum)
         paramIdx += 1
         updates.push(`end_hour = $${paramIdx}`)
         params.push(startHourNum + 2)
+        paramIdx += 1
+      } else if (hasBookingDate) {
+        updates.push(`end_hour = $${paramIdx}`)
+        params.push(effectiveStartHour + 2)
         paramIdx += 1
       }
 
@@ -1230,6 +1273,9 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
     res.json({ success: true, message: 'บันทึกแล้ว', booking })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'เวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น' })
+    }
     res.status(500).json({ error: err.message })
   }
 })
