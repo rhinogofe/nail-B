@@ -9,7 +9,7 @@ const {
   validateRequiredOptions,
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
-const { resolveTikTokVideo, fetchTikTokThumbnail } = require('../utils/tiktokUrl')
+const { resolveShowcaseClip, fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
 const { validateBookingStartHour } = require('../utils/bookingHours')
 const {
   getUnpaidExpireSettings,
@@ -1908,7 +1908,7 @@ router.get('/showcase-clips', auth, admin, async (req, res) => {
     const pool = getPool()
     const result = await pool.query(
       `
-        SELECT id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
+        SELECT id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
         FROM showcase_clips
         ORDER BY sort_order ASC, created_at DESC
       `
@@ -1920,33 +1920,35 @@ router.get('/showcase-clips', auth, admin, async (req, res) => {
 })
 
 router.post('/showcase-clips', auth, admin, async (req, res) => {
-  const tiktokUrl = String(req.body?.tiktok_url || '').trim()
+  const mediaUrl = String(req.body?.tiktok_url || req.body?.clip_url || '').trim()
   const title = String(req.body?.title || '').trim() || null
   const is_active = req.body?.is_active !== false
 
-  if (!tiktokUrl) {
-    return res.status(400).json({ error: 'กรุณาวางลิงก์คลิป TikTok' })
+  if (!mediaUrl) {
+    return res.status(400).json({ error: 'กรุณาวางลิงก์คลิป TikTok หรือ Instagram' })
   }
 
   try {
-    const resolved = await resolveTikTokVideo(tiktokUrl)
+    const resolved = await resolveShowcaseClip(mediaUrl)
     if (!resolved) {
-      return res.status(400).json({ error: 'ลิงก์ TikTok ไม่ถูกต้อง กรุณาใช้ลิงก์คลิปหรือโพสต์รูป เช่น .../video/123 หรือ .../photo/123' })
+      return res.status(400).json({
+        error: 'ลิงก์ไม่ถูกต้อง ใช้ลิงก์ TikTok (.../video/123) หรือ Instagram (.../p/... หรือ .../reel/...)',
+      })
     }
 
     const pool = getPool()
     const orderRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM showcase_clips`)
     const sort_order = Number(orderRes.rows[0]?.next_order) || 1
 
-    const thumbnail_url = await fetchTikTokThumbnail(resolved.tiktok_url)
+    const thumbnail_url = await fetchShowcaseThumbnail(resolved.source, resolved.tiktok_url)
 
     const result = await pool.query(
       `
-        INSERT INTO showcase_clips (tiktok_url, video_id, title, thumbnail_url, sort_order, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
+        INSERT INTO showcase_clips (source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [resolved.tiktok_url, resolved.video_id, title, thumbnail_url, sort_order, is_active]
+      [resolved.source, resolved.tiktok_url, resolved.video_id, title, thumbnail_url, sort_order, is_active]
     )
 
     res.status(201).json({ success: true, clip: result.rows[0] })
@@ -1960,7 +1962,7 @@ router.post('/showcase-clips', auth, admin, async (req, res) => {
 
 router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
   const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key)
-  if (!has('tiktok_url') && !has('title') && !has('is_active') && !has('sort_order')) {
+  if (!has('tiktok_url') && !has('clip_url') && !has('title') && !has('is_active') && !has('sort_order')) {
     return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
   }
 
@@ -1971,22 +1973,24 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
     }
 
+    let source = existing.rows[0].source || 'tiktok'
     let tiktok_url = existing.rows[0].tiktok_url
     let video_id = existing.rows[0].video_id
     let thumbnail_url = existing.rows[0].thumbnail_url
 
-    if (has('tiktok_url')) {
-      const inputUrl = String(req.body.tiktok_url || '').trim()
+    if (has('tiktok_url') || has('clip_url')) {
+      const inputUrl = String(req.body.tiktok_url || req.body.clip_url || '').trim()
       if (!inputUrl) {
-        return res.status(400).json({ error: 'กรุณาวางลิงก์คลิป TikTok' })
+        return res.status(400).json({ error: 'กรุณาวางลิงก์คลิป TikTok หรือ Instagram' })
       }
-      const resolved = await resolveTikTokVideo(inputUrl)
+      const resolved = await resolveShowcaseClip(inputUrl)
       if (!resolved) {
-        return res.status(400).json({ error: 'ลิงก์ TikTok ไม่ถูกต้อง' })
+        return res.status(400).json({ error: 'ลิงก์ TikTok หรือ Instagram ไม่ถูกต้อง' })
       }
+      source = resolved.source
       tiktok_url = resolved.tiktok_url
       video_id = resolved.video_id
-      thumbnail_url = await fetchTikTokThumbnail(resolved.tiktok_url)
+      thumbnail_url = await fetchShowcaseThumbnail(resolved.source, resolved.tiktok_url)
     }
 
     const title = has('title')
@@ -2005,17 +2009,18 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
       `
         UPDATE showcase_clips
         SET
-          tiktok_url = $1,
-          video_id = $2,
-          title = $3,
-          thumbnail_url = $4,
-          is_active = $5,
-          sort_order = $6,
+          source = $1,
+          tiktok_url = $2,
+          video_id = $3,
+          title = $4,
+          thumbnail_url = $5,
+          is_active = $6,
+          sort_order = $7,
           updated_at = NOW()
-        WHERE id = $7
-        RETURNING id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
+        WHERE id = $8
+        RETURNING id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [tiktok_url, video_id, title, thumbnail_url, is_active, sort_order, req.params.id]
+      [source, tiktok_url, video_id, title, thumbnail_url, is_active, sort_order, req.params.id]
     )
 
     res.json({ success: true, clip: result.rows[0] })
@@ -2031,16 +2036,17 @@ router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, re
   try {
     const pool = getPool()
     const existing = await pool.query(
-      `SELECT id, tiktok_url FROM showcase_clips WHERE id = $1`,
+      `SELECT id, source, tiktok_url FROM showcase_clips WHERE id = $1`,
       [req.params.id]
     )
     if (!existing.rows.length) {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
     }
 
-    const thumbnail_url = await fetchTikTokThumbnail(existing.rows[0].tiktok_url)
+    const row = existing.rows[0]
+    const thumbnail_url = await fetchShowcaseThumbnail(row.source || 'tiktok', row.tiktok_url)
     if (!thumbnail_url) {
-      return res.status(502).json({ error: 'ดึงรูปปกจาก TikTok ไม่สำเร็จ ลองใหม่ภายหลัง' })
+      return res.status(502).json({ error: 'ดึงรูปปกไม่สำเร็จ ลองใหม่ภายหลัง' })
     }
 
     const result = await pool.query(
@@ -2048,7 +2054,7 @@ router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, re
         UPDATE showcase_clips
         SET thumbnail_url = $1, updated_at = NOW()
         WHERE id = $2
-        RETURNING id, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
+        RETURNING id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
       [thumbnail_url, req.params.id]
     )

@@ -126,6 +126,7 @@ async function ensureSchema() {
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total NUMERIC(10, 2);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
+    ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tiktok';
   `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)
