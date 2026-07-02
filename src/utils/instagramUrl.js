@@ -80,38 +80,78 @@ async function fetchInstagramThumbnailFromOembed(instagramUrl) {
   }
 }
 
-async function fetchInstagramThumbnailFromOg(instagramUrl) {
+async function fetchInstagramThumbnailFromGraph(instagramUrl) {
   try {
-    const response = await fetch(instagramUrl, {
-      redirect: 'follow',
-      headers: {
-        'User-Agent': BROWSER_UA,
-        'Accept-Language': 'en-US,en;q=0.9,th;q=0.8',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-    })
-    if (!response.ok) return null
-    const html = await response.text()
-    const patterns = [
-      /property="og:image"\s+content="([^"]+)"/i,
-      /content="([^"]+)"\s+property="og:image"/i,
-    ]
-    for (const pattern of patterns) {
-      const match = html.match(pattern)
-      if (match?.[1]) {
-        const url = decodeOgImage(match[1])
-        if (url.startsWith('http')) return url
+    const response = await fetch(
+      `https://graph.facebook.com/v8.0/instagram_oembed?url=${encodeURIComponent(instagramUrl)}&omitscript=true`,
+      {
+        headers: {
+          'User-Agent': BROWSER_UA,
+          Accept: 'application/json',
+        },
       }
-    }
-    return null
+    )
+    if (!response.ok) return null
+    const data = await response.json()
+    if (data.thumbnail_url) return data.thumbnail_url
+    const html = String(data.html || '')
+    const imgMatch = html.match(/src="(https:\/\/[^"]+\.cdninstagram\.com[^"]+)"/i)
+    return imgMatch?.[1]?.replace(/&amp;/g, '&') || null
   } catch {
     return null
   }
 }
 
+function extractImageFromInstagramHtml(html) {
+  const patterns = [
+    /property="og:image"\s+content="([^"]+)"/i,
+    /content="([^"]+)"\s+property="og:image"/i,
+    /"display_url":"([^"]+)"/,
+    /"thumbnail_src":"([^"]+)"/,
+    /(https:\/\/[^"'\s]+\.cdninstagram\.com[^"'\s]+\.(?:jpg|jpeg|webp)[^"'\s]*)/i,
+  ]
+  for (const pattern of patterns) {
+    const match = String(html || '').match(pattern)
+    if (match?.[1]) {
+      const url = decodeOgImage(match[1])
+      if (url.startsWith('http')) return url
+    }
+  }
+  return null
+}
+
+async function fetchInstagramThumbnailFromOg(instagramUrl) {
+  const candidates = [
+    instagramUrl,
+    `${instagramUrl.replace(/\/$/, '')}/embed/captioned/`,
+    `${instagramUrl.replace(/\/$/, '')}/media/?size=l`,
+  ]
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': BROWSER_UA,
+          'Accept-Language': 'en-US,en;q=0.9,th;q=0.8',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      })
+      if (!response.ok) continue
+      const html = await response.text()
+      const imageUrl = extractImageFromInstagramHtml(html)
+      if (imageUrl) return imageUrl
+    } catch {
+      // try next candidate
+    }
+  }
+  return null
+}
+
 async function fetchInstagramThumbnail(instagramUrl) {
   const fromOembed = await fetchInstagramThumbnailFromOembed(instagramUrl)
   if (fromOembed) return fromOembed
+  const fromGraph = await fetchInstagramThumbnailFromGraph(instagramUrl)
+  if (fromGraph) return fromGraph
   return fetchInstagramThumbnailFromOg(instagramUrl)
 }
 

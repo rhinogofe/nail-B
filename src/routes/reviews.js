@@ -64,7 +64,12 @@ async function enrichClipThumbnails(pool, rows) {
   return enriched
 }
 
-router.get('/clips/:id/thumbnail', auth, async (req, res) => {
+router.get('/clips/:id/thumbnail', (req, res, next) => {
+  if (!req.headers.authorization && typeof req.query.token === 'string' && req.query.token) {
+    req.headers.authorization = `Bearer ${req.query.token}`
+  }
+  return auth(req, res, next)
+}, async (req, res) => {
   try {
     const pool = getPool()
     const result = await pool.query(
@@ -83,6 +88,7 @@ router.get('/clips/:id/thumbnail', auth, async (req, res) => {
     const buffer = Buffer.from(await imageRes.arrayBuffer())
     res.set('Content-Type', imageRes.headers.get('content-type') || 'image/jpeg')
     res.set('Cache-Control', 'public, max-age=3600')
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin')
     res.send(buffer)
   } catch (err) {
     res.status(500).json({ error: err.message })
