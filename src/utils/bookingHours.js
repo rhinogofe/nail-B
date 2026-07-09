@@ -4,9 +4,16 @@ async function getShopHours(pool) {
      WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
   )
   const map = Object.fromEntries(result.rows.map((r) => [r.setting_key, Number(r.setting_value)]))
+  const openHour = Number.isInteger(map.shop_open_hour) && map.shop_open_hour >= 1 && map.shop_open_hour <= 20
+    ? map.shop_open_hour
+    : 9
+  const lastRaw = map.shop_last_booking_hour
+  const lastBookingHour = Number.isInteger(lastRaw) && lastRaw >= openHour + 2 && lastRaw <= 22
+    ? lastRaw
+    : Math.max(openHour + 2, 18)
   return {
-    openHour: map.shop_open_hour ?? 9,
-    lastBookingHour: map.shop_last_booking_hour ?? 18,
+    openHour,
+    lastBookingHour,
   }
 }
 

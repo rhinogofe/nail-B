@@ -10,7 +10,7 @@ const {
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
 const { resolveShowcaseClip, fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
-const { validateBookingStartHour } = require('../utils/bookingHours')
+const { validateBookingStartHour, getShopHours } = require('../utils/bookingHours')
 const {
   getUnpaidExpireSettings,
   isBookingExpired,
@@ -28,18 +28,6 @@ function addDaysYmd(ymd, days) {
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
-}
-
-async function getShopHours(pool) {
-  const result = await pool.query(
-    `SELECT setting_key, setting_value FROM app_settings
-     WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
-  )
-  const map = Object.fromEntries(result.rows.map((r) => [r.setting_key, Number(r.setting_value)]))
-  return {
-    openHour: map.shop_open_hour ?? 9,
-    lastBookingHour: map.shop_last_booking_hour ?? 18,
-  }
 }
 
 async function assertSlotAvailable(client, bookingDate, startHour, excludeId = null) {
@@ -861,14 +849,10 @@ router.patch('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
 router.get('/settings/shop-hours', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_key, setting_value FROM app_settings
-       WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
-    )
-    const map = Object.fromEntries(result.rows.map(r => [r.setting_key, Number(r.setting_value)]))
+    const hours = await getShopHours(pool)
     res.json({
-      open_hour: map.shop_open_hour ?? 9,
-      last_booking_hour: map.shop_last_booking_hour ?? 18,
+      open_hour: hours.openHour,
+      last_booking_hour: hours.lastBookingHour,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -878,8 +862,8 @@ router.get('/settings/shop-hours', auth, admin, async (req, res) => {
 router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
   const open = Number(req.body?.open_hour)
   const last = Number(req.body?.last_booking_hour)
-  if (!Number.isInteger(open) || open < 0 || open > 20)
-    return res.status(400).json({ error: 'open_hour ต้องอยู่ระหว่าง 0-20' })
+  if (!Number.isInteger(open) || open < 1 || open > 20)
+    return res.status(400).json({ error: 'open_hour ต้องอยู่ระหว่าง 1-20' })
   if (!Number.isInteger(last) || last < open + 2 || last > 22)
     return res.status(400).json({ error: 'last_booking_hour ต้องมากกว่า open_hour อย่างน้อย 2 และไม่เกิน 22' })
   try {
