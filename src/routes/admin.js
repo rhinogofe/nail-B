@@ -391,38 +391,15 @@ router.post('/bookings', auth, admin, async (req, res) => {
       const completedAt = status === 'done' ? new Date() : null
       const bookingTotal = totalProvided ? totalNum : null
 
-      const reused = await client.query(
+      const inserted = await client.query(
         `
-          UPDATE bookings
-          SET
-            user_id = $1,
-            status = $2,
-            completed_at = $3,
-            total = $4,
-            end_hour = COALESCE(end_hour, $5),
-            created_at = CASE WHEN $2 = 'awaiting_payment' THEN NOW() ELSE created_at END
-          WHERE booking_date = $6
-            AND start_hour = $7
-            AND status = 'cancelled'
+          INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status, total, completed_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           RETURNING id
         `,
-        [user_id, status, completedAt, bookingTotal, endHour, booking_date, startHourNum]
+        [user_id, booking_date, startHourNum, endHour, status, bookingTotal, completedAt]
       )
-
-      let bookingId
-      if (reused.rows.length > 0) {
-        bookingId = reused.rows[0].id
-      } else {
-        const inserted = await client.query(
-          `
-            INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status, total, completed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id
-          `,
-          [user_id, booking_date, startHourNum, endHour, status, bookingTotal, completedAt]
-        )
-        bookingId = inserted.rows[0].id
-      }
+      const bookingId = inserted.rows[0].id
 
       await syncBookingOptions(client, bookingId, optionIds)
 

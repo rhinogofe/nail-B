@@ -27,8 +27,7 @@ async function ensureSchema() {
         CHECK (status IN ('awaiting_payment', 'pending', 'done', 'cancelled')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ,
-      total NUMERIC(10, 2),
-      UNIQUE (booking_date, start_hour)
+      total NUMERIC(10, 2)
     );
 
     CREATE TABLE IF NOT EXISTS point_logs (
@@ -127,6 +126,15 @@ async function ensureSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tiktok';
+  `)
+
+  await pool.query(`
+    ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_booking_date_start_hour_key;
+  `)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_date_hour
+      ON bookings (booking_date, start_hour)
+      WHERE status != 'cancelled';
   `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)

@@ -264,35 +264,6 @@ router.post('/', auth, async (req, res) => {
       return res.status(409).json({ error: 'ช่วงเวลานี้ร้านปิดรับคิว' })
     }
 
-    const reused = await pool.query(
-      `
-        UPDATE bookings
-        SET
-          user_id = $1,
-          status = 'awaiting_payment',
-          completed_at = NULL,
-          created_at = NOW()
-        WHERE booking_date = $2
-          AND start_hour = $3
-          AND status = 'cancelled'
-        RETURNING id, booking_date, start_hour, end_hour, status
-      `,
-      [req.user.id, booking_date, start_hour]
-    )
-
-    if (reused.rows.length > 0) {
-      await pool.query(
-        `UPDATE bookings SET end_hour = $1 WHERE id = $2 AND end_hour IS NULL`,
-        [start_hour + 2, reused.rows[0].id]
-      )
-      await syncBookingOptions(pool, reused.rows[0].id, uniqueOptionIds)
-      const updated = await pool.query(
-        `SELECT id, booking_date, start_hour, end_hour, status FROM bookings WHERE id = $1`,
-        [reused.rows[0].id]
-      )
-      return res.status(201).json({ success: true, booking: updated.rows[0] })
-    }
-
     const result = await pool.query(
       `
         INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status)
