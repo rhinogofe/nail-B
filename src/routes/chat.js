@@ -108,4 +108,39 @@ router.get('/unread-count', async (req, res) => {
   }
 })
 
+router.get('/notifications', async (req, res) => {
+  const after = req.query.after
+  const afterDate = after ? new Date(after) : null
+  if (after && Number.isNaN(afterDate.getTime())) {
+    return res.status(400).json({ error: 'after ไม่ถูกต้อง' })
+  }
+
+  try {
+    const pool = getPool()
+    const params = [req.shop.id, req.user.id]
+    let timeFilter = ''
+    if (afterDate) {
+      params.push(afterDate.toISOString())
+      timeFilter = `AND created_at > $${params.length}`
+    }
+
+    const result = await pool.query(
+      `
+        SELECT id, body, image_url, sender_role, created_at
+        FROM chat_messages
+        WHERE shop_id = $1
+          AND user_id = $2
+          AND sender_role = 'admin'
+          ${timeFilter}
+        ORDER BY created_at ASC
+        LIMIT 20
+      `,
+      params
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 module.exports = router

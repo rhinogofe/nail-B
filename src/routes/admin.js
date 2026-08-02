@@ -2562,6 +2562,57 @@ router.get('/chat/unread-count', async (req, res) => {
   }
 })
 
+router.get('/chat/notifications', async (req, res) => {
+  const after = req.query.after
+  const afterDate = after ? new Date(after) : null
+  if (after && Number.isNaN(afterDate.getTime())) {
+    return res.status(400).json({ error: 'after ไม่ถูกต้อง' })
+  }
+
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const branchScoped = req.shop.slug !== 'default'
+    const params = [shopId]
+    let timeFilter = ''
+    if (afterDate) {
+      params.push(afterDate.toISOString())
+      timeFilter = `AND cm.created_at > $${params.length}`
+    }
+
+    const branchFilter = branchScoped
+      ? `AND (
+          EXISTS (SELECT 1 FROM bookings b WHERE b.shop_id = $1 AND b.user_id = cm.user_id)
+          OR EXISTS (SELECT 1 FROM chat_messages cx WHERE cx.shop_id = $1 AND cx.user_id = cm.user_id)
+        )`
+      : ''
+
+    const result = await pool.query(
+      `
+        SELECT
+          cm.id,
+          cm.user_id,
+          cm.body,
+          cm.image_url,
+          cm.created_at,
+          u.name AS user_name
+        FROM chat_messages cm
+        JOIN users u ON u.id = cm.user_id
+        WHERE cm.shop_id = $1
+          AND cm.sender_role = 'customer'
+          ${branchFilter}
+          ${timeFilter}
+        ORDER BY cm.created_at ASC
+        LIMIT 20
+      `,
+      params
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/chat/conversations/:userId/messages', async (req, res) => {
   try {
     const pool = getPool()
