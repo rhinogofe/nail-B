@@ -131,6 +131,20 @@ async function ensureSchema() {
   await pool.query(`
     ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_booking_date_start_hour_key;
   `)
+
+  // Phone login: same number + different name = separate accounts
+  await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_provider_provider_id_key`)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_users_oauth_provider
+      ON users (provider, provider_id)
+      WHERE provider <> 'phone'
+  `)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_users_phone_identity
+      ON users (provider, provider_id, lower(trim(name)))
+      WHERE provider = 'phone'
+  `)
+
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_date_hour
       ON bookings (booking_date, start_hour)

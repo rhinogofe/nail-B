@@ -44,8 +44,12 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
 }
 
+function normalizeLoginName(name) {
+  return String(name || '').trim()
+}
+
 router.post('/phone-login', async (req, res) => {
-  const name = String(req.body?.name || '').trim()
+  const name = normalizeLoginName(req.body?.name)
   const phone = normalizePhone(req.body?.phone)
 
   if (!name || !phone) {
@@ -56,19 +60,20 @@ router.post('/phone-login', async (req, res) => {
     const pool = getPool()
 
     const found = await pool.query(
-      `SELECT * FROM users WHERE provider = $1 AND provider_id = $2 LIMIT 1`,
-      ['phone', phone]
+      `
+        SELECT *
+        FROM users
+        WHERE provider = 'phone'
+          AND provider_id = $1
+          AND lower(trim(name)) = lower(trim($2))
+        LIMIT 1
+      `,
+      [phone, name]
     )
 
     let user = found.rows[0]
 
-    if (user) {
-      const updated = await pool.query(
-        `UPDATE users SET name = $1 WHERE id = $2 RETURNING *`,
-        [name, user.id]
-      )
-      user = updated.rows[0]
-    } else {
+    if (!user) {
       const created = await pool.query(
         `INSERT INTO users (name, email, avatar_url, provider, provider_id)
          VALUES ($1, $2, $3, $4, $5)
@@ -81,6 +86,9 @@ router.post('/phone-login', async (req, res) => {
     const token = signToken(user)
     res.json({ token })
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อและเบอร์นี้มีบัญชีแล้ว กรุณาตรวจสอบการสะกดชื่อ' })
+    }
     res.status(500).json({ error: err.message })
   }
 })
@@ -168,7 +176,7 @@ router.patch('/profile', auth, async (req, res) => {
   try {
     const pool = getPool()
     const existing = await pool.query(
-      `SELECT id, provider, provider_id, email FROM users WHERE id = $1`,
+      `SELECT id, provider, provider_id, email, name FROM users WHERE id = $1`,
       [req.user.id]
     )
     if (!existing.rows.length) {
@@ -191,19 +199,30 @@ router.patch('/profile', auth, async (req, res) => {
       }
       const phone = normalizePhone(req.body.phone)
       if (!phone) return res.status(400).json({ error: 'กรุณาระบุเบอร์โทร' })
-      const dup = await pool.query(
-        `SELECT id FROM users WHERE provider = 'phone' AND provider_id = $1 AND id != $2 LIMIT 1`,
-        [phone, req.user.id]
-      )
-      if (dup.rows.length) {
-        return res.status(409).json({ error: 'เบอร์โทรนี้ถูกใช้แล้ว' })
-      }
       params.push(phone)
       fields.push(`provider_id = $${params.length}`)
       if (String(current.email || '').endsWith('@phone.local')) {
         params.push(`${phone}@phone.local`)
         fields.push(`email = $${params.length}`)
       }
+    }
+
+    if (current.provider === 'phone' && (has('name') || has('phone'))) {
+      const nextName = has('name') ? String(req.body.name).trim() : current.name
+      const nextPhone = has('phone') ? normalizePhone(req.body.phone) : current.provider_id
+      const dup = await pool.query(
+        `SELECT id FROM users
+         WHERE provider = 'phone' AND provider_id = $1 AND lower(trim(name)) = lower(trim($2)) AND id != $3
+         LIMIT 1`,
+        [nextPhone, nextName, req.user.id]
+      )
+      if (dup.rows.length) {
+        return res.status(409).json({ error: 'ชื่อและเบอร์นี้ถูกใช้แล้ว' })
+      }
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
     }
 
     params.push(req.user.id)

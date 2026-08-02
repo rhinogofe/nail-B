@@ -1657,7 +1657,7 @@ router.patch('/users/:id', async (req, res) => {
   try {
     const pool = getPool()
     const existing = await pool.query(
-      `SELECT provider, provider_id, email FROM users WHERE id = $1`,
+      `SELECT provider, provider_id, email, name FROM users WHERE id = $1`,
       [req.params.id]
     )
     if (!existing.rows.length) {
@@ -1674,11 +1674,13 @@ router.patch('/users/:id', async (req, res) => {
         return res.status(400).json({ error: 'กรุณาระบุเบอร์โทร' })
       }
       const dup = await pool.query(
-        `SELECT id FROM users WHERE provider = 'phone' AND provider_id = $1 AND id != $2 LIMIT 1`,
-        [phone, req.params.id]
+        `SELECT id FROM users
+         WHERE provider = 'phone' AND provider_id = $1 AND lower(trim(name)) = lower(trim($2)) AND id != $3
+         LIMIT 1`,
+        [phone, has('name') ? String(req.body.name).trim() : current.name, req.params.id]
       )
       if (dup.rows.length) {
-        return res.status(409).json({ error: 'เบอร์โทรนี้ถูกใช้แล้ว' })
+        return res.status(409).json({ error: 'ชื่อและเบอร์นี้ถูกใช้แล้ว' })
       }
       params.push(phone)
       fields.push(`provider_id = $${params.length}`)
