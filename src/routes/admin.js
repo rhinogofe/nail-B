@@ -36,7 +36,9 @@ const {
   syncShopAdminAssignment,
   attachAdminShopFields,
 } = require('../utils/shopAdmins')
-const { requireChatUserAccess, normalizeChatBody } = require('../utils/chatAccess')
+const { requireChatUserAccess } = require('../utils/chatAccess')
+const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
+const { deleteChatImagesForConversation } = require('../utils/chatImages')
 
 router.use(resolveShop)
 router.use(auth)
@@ -2494,13 +2496,17 @@ router.get('/chat/conversations', async (req, res) => {
           u.name,
           u.email,
           u.avatar_url,
-          last.body AS last_message,
+          CASE
+            WHEN last.image_url IS NOT NULL AND COALESCE(TRIM(last.body), '') = '' THEN '[รูปภาพ]'
+            ELSE COALESCE(last.body, '')
+          END AS last_message,
+          last.image_url AS last_image_url,
           last.sender_role AS last_sender_role,
           last.created_at AS last_message_at,
           COALESCE(unread.count, 0)::int AS unread_count
         FROM (
           SELECT DISTINCT ON (user_id)
-            user_id, body, sender_role, created_at
+            user_id, body, image_url, sender_role, created_at
           FROM chat_messages cm
           WHERE shop_id = $1
           ${scopeFilter}
@@ -2574,7 +2580,7 @@ router.get('/chat/conversations/:userId/messages', async (req, res) => {
 
     const messagesRes = await pool.query(
       `
-        SELECT id, body, sender_role, sender_id, read_at, created_at
+        SELECT ${MESSAGE_FIELDS}
         FROM chat_messages
         WHERE shop_id = $1 AND user_id = $2
         ORDER BY created_at ASC
@@ -2603,9 +2609,6 @@ router.get('/chat/conversations/:userId/messages', async (req, res) => {
 })
 
 router.post('/chat/conversations/:userId/messages', async (req, res) => {
-  const body = normalizeChatBody(req.body?.body)
-  if (!body) return res.status(400).json({ error: 'กรุณาพิมพ์ข้อความ' })
-
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -2618,15 +2621,41 @@ router.post('/chat/conversations/:userId/messages', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
     }
 
+    const row = await createChatMessage(pool, {
+      shopId,
+      userId,
+      senderRole: 'admin',
+      senderId: req.user.id,
+      body: req.body?.body,
+      imageData: req.body?.image_data,
+      imageMime: req.body?.image_mime,
+    })
+    res.status(201).json(row)
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/chat/conversations/:userId', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const userId = req.params.userId
+
+    await requireChatUserAccess(pool, req.shop, userId)
+
+    await deleteChatImagesForConversation(pool, shopId, userId)
     const result = await pool.query(
-      `
-        INSERT INTO chat_messages (shop_id, user_id, sender_role, sender_id, body)
-        VALUES ($1, $2, 'admin', $3, $4)
-        RETURNING id, body, sender_role, sender_id, read_at, created_at
-      `,
-      [shopId, userId, req.user.id, body]
+      `DELETE FROM chat_messages WHERE shop_id = $1 AND user_id = $2`,
+      [shopId, userId]
     )
-    res.status(201).json(result.rows[0])
+
+    res.json({
+      success: true,
+      deleted_count: result.rowCount,
+      message: 'ลบประวัติแชทแล้ว',
+    })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })

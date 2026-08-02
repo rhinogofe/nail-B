@@ -228,7 +228,8 @@ async function ensureSchema() {
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       sender_role TEXT NOT NULL CHECK (sender_role IN ('admin', 'customer')),
       sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      body TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      image_url TEXT,
       read_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -239,6 +240,10 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS ix_chat_messages_unread_customer
       ON chat_messages (shop_id, user_id)
       WHERE sender_role = 'customer' AND read_at IS NULL;
+  `)
+
+  await pool.query(`
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image_url TEXT;
   `)
 
   await pool.query(`

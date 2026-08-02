@@ -1,0 +1,100 @@
+const fs = require('fs').promises
+const path = require('path')
+const crypto = require('crypto')
+
+const UPLOAD_ROOT = path.join(__dirname, '../../uploads/chat')
+const MAX_BYTES = 2 * 1024 * 1024
+const MIME_EXT = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+}
+
+function parseBase64Image(imageData, imageMime) {
+  if (!imageData) return null
+  const mime = String(imageMime || '').toLowerCase().trim()
+  const ext = MIME_EXT[mime]
+  if (!ext) return { error: 'รองรับเฉพาะ JPG, PNG, WebP, GIF' }
+
+  let b64 = String(imageData)
+  const dataUrlMatch = b64.match(/^data:[^;]+;base64,(.+)$/i)
+  if (dataUrlMatch) b64 = dataUrlMatch[1]
+
+  let buffer
+  try {
+    buffer = Buffer.from(b64, 'base64')
+  } catch {
+    return { error: 'รูปภาพไม่ถูกต้อง' }
+  }
+
+  if (!buffer.length) return { error: 'รูปภาพว่าง' }
+  if (buffer.length > MAX_BYTES) return { error: 'รูปใหญ่เกิน 2MB' }
+
+  return { buffer, ext, mime }
+}
+
+function shopImagePath(shopId, filename) {
+  const safeName = path.basename(String(filename || ''))
+  if (!safeName || safeName !== filename || safeName.includes('..')) return null
+  return path.join(UPLOAD_ROOT, shopId, safeName)
+}
+
+async function saveChatImage(shopId, buffer, ext) {
+  const dir = path.join(UPLOAD_ROOT, shopId)
+  await fs.mkdir(dir, { recursive: true })
+  const filename = `${crypto.randomUUID()}.${ext}`
+  await fs.writeFile(path.join(dir, filename), buffer)
+  return filename
+}
+
+async function deleteChatImageFile(shopId, filename) {
+  const filePath = shopImagePath(shopId, filename)
+  if (!filePath) return
+  try {
+    await fs.unlink(filePath)
+  } catch {
+    /* ignore missing files */
+  }
+}
+
+async function deleteChatImagesForConversation(pool, shopId, userId) {
+  const result = await pool.query(
+    `
+      SELECT image_url
+      FROM chat_messages
+      WHERE shop_id = $1 AND user_id = $2 AND image_url IS NOT NULL
+    `,
+    [shopId, userId]
+  )
+  await Promise.all(
+    result.rows.map((row) => deleteChatImageFile(shopId, row.image_url))
+  )
+}
+
+async function readChatImageFile(shopId, filename) {
+  const filePath = shopImagePath(shopId, filename)
+  if (!filePath) return null
+  try {
+    return await fs.readFile(filePath)
+  } catch {
+    return null
+  }
+}
+
+function formatLastMessagePreview(body, imageUrl) {
+  const text = String(body || '').trim()
+  if (imageUrl && !text) return '[รูปภาพ]'
+  if (imageUrl && text) return text
+  return text
+}
+
+module.exports = {
+  parseBase64Image,
+  saveChatImage,
+  deleteChatImageFile,
+  deleteChatImagesForConversation,
+  readChatImageFile,
+  formatLastMessagePreview,
+  MIME_EXT,
+}
