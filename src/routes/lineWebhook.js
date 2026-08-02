@@ -24,6 +24,11 @@ router.post('/', express.raw({ type: 'application/json' }), async (req, res) => 
 
   res.status(200).json({ ok: true })
 
+  const eventCount = Array.isArray(payload?.events) ? payload.events.length : 0
+  if (eventCount > 0) {
+    console.log(`lineWebhook: received ${eventCount} event(s)`)
+  }
+
   handleLineWebhookPayload(payload).catch((err) => {
     console.error('lineWebhook:', err.message)
   })

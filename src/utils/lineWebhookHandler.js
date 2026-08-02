@@ -98,17 +98,23 @@ async function handleLineWebhookEvent(event) {
   }
 
   await setLinePushSettings(pool, shop.id, partial)
+  console.log(`lineWebhook: linked shop "${shop.slug}" → ${pushToId}`)
 
   const destLabel = event.source?.type === 'group'
     ? 'กลุ่ม LINE นี้'
     : 'LINE นี้'
 
   if (replyToken && accessToken) {
-    await replyLineMessage({
+    const reply = await replyLineMessage({
       channelAccessToken: accessToken,
       replyToken,
       text: `✅ ผูกแจ้งเตือนแล้ว\n\nร้าน: ${shop.name}\nslug: ${shop.slug}\nส่งไปที่: ${destLabel}\nID: ${pushToId}\n\nเมื่อลูกค้าจองคิว จะแจ้งเตือนที่นี่อัตโนมัติ`,
-    }).catch(() => null)
+    }).catch((err) => ({ ok: false, error: err.message }))
+    if (!reply?.ok) {
+      console.error('lineWebhook reply failed:', reply?.status, reply?.error)
+    }
+  } else if (replyToken && !accessToken) {
+    console.error('lineWebhook: linked OK but no LINE_BOT_CHANNEL_ACCESS_TOKEN to reply')
   }
 }
 
