@@ -1,7 +1,9 @@
 const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
+const resolveShop = require('../middleware/resolveShop')
 const { getPool, withTransaction } = require('../db/pool')
+const { getShopSetting, getShopSettings, setShopSetting, setShopSettings } = require('../utils/shopSettings')
 const { computeBookUntilDate, getAdvanceSettings, todayYmdBangkok } = require('../utils/bookingWindow')
 const {
   syncBookingOptions,
@@ -11,6 +13,10 @@ const {
 } = require('../utils/bookingOptions')
 const { resolveShowcaseClip, fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
 const { validateBookingStartHour, getShopHours } = require('../utils/bookingHours')
+const { getUiSettings, setUiSettings } = require('../utils/shopUiSettings')
+const { getCouponSettings, setCouponSettings } = require('../utils/couponSettings')
+const { getLinePushSettings, setLinePushSettings, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
+const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const {
   getUnpaidExpireSettings,
   isBookingExpired,
@@ -18,6 +24,33 @@ const {
   MIN_HOURS,
   MAX_HOURS,
 } = require('../utils/unpaidExpire')
+
+router.use(resolveShop)
+
+router.get('/shops', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    if (req.shop.slug === 'default') {
+      const result = await pool.query(
+        `SELECT id, slug, name, is_active, created_at
+         FROM shops
+         WHERE is_active = true
+         ORDER BY name ASC`
+      )
+      return res.json(result.rows)
+    }
+    const result = await pool.query(
+      `SELECT id, slug, name, is_active, created_at
+       FROM shops
+       WHERE id = $1 AND is_active = true
+       LIMIT 1`,
+      [req.shop.id]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
 function addDaysYmd(ymd, days) {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -30,8 +63,8 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
 }
 
-async function assertSlotAvailable(client, bookingDate, startHour, excludeId = null) {
-  const params = [bookingDate, startHour, startHour + 2]
+async function assertSlotAvailable(client, shopId, bookingDate, startHour, excludeId = null) {
+  const params = [shopId, bookingDate, startHour, startHour + 2]
   let excludeClause = ''
   if (excludeId) {
     params.push(excludeId)
@@ -41,11 +74,12 @@ async function assertSlotAvailable(client, bookingDate, startHour, excludeId = n
     `
       SELECT id
       FROM bookings
-      WHERE booking_date = $1
+      WHERE shop_id = $1
+        AND booking_date = $2
         AND status != 'cancelled'
         ${excludeClause}
-        AND start_hour < $3
-        AND COALESCE(end_hour, start_hour + 2) > $2
+        AND start_hour < $4
+        AND COALESCE(end_hour, start_hour + 2) > $3
       LIMIT 1
     `,
     params
@@ -57,19 +91,20 @@ async function assertSlotAvailable(client, bookingDate, startHour, excludeId = n
   }
 }
 
-async function assertSlotNotBlocked(client, bookingDate, startHour) {
+async function assertSlotNotBlocked(client, shopId, bookingDate, startHour) {
   const blocked = await client.query(
     `
       SELECT id
       FROM booking_blocks
-      WHERE block_date = $1
+      WHERE shop_id = $1
+        AND block_date = $2
         AND (
           is_full_day = true
-          OR (start_hour < $3 AND end_hour > $2)
+          OR (start_hour < $4 AND end_hour > $3)
         )
       LIMIT 1
     `,
-    [bookingDate, startHour, startHour + 2]
+    [shopId, bookingDate, startHour, startHour + 2]
   )
   if (blocked.rows.length > 0) {
     const err = new Error('ช่วงเวลานี้ร้านปิดรับคิว')
@@ -78,7 +113,7 @@ async function assertSlotNotBlocked(client, bookingDate, startHour) {
   }
 }
 
-async function fetchAdminBookingWithOptions(client, bookingId) {
+async function fetchAdminBookingWithOptions(client, shopId, bookingId) {
   const result = await client.query(
     `
       SELECT
@@ -95,9 +130,9 @@ async function fetchAdminBookingWithOptions(client, bookingId) {
         u.email AS user_email
       FROM bookings b
       JOIN users u ON u.id = b.user_id
-      WHERE b.id = $1
+      WHERE b.id = $1 AND b.shop_id = $2
     `,
-    [bookingId]
+    [bookingId, shopId]
   )
   if (!result.rows.length) return null
   const optionsResult = await client.query(
@@ -131,11 +166,12 @@ function buildDateRange(startDate, dayCount) {
 
 router.get('/bookings', auth, admin, async (req, res) => {
   const { date, status } = req.query
+  const shopId = req.shop.id
   try {
     const pool = getPool()
-    await expireUnpaidBookings(pool)
-    const params = []
-    let where = 'WHERE 1=1'
+    await expireUnpaidBookings(pool, shopId)
+    const params = [shopId]
+    let where = 'WHERE b.shop_id = $1'
 
     if (date) {
       params.push(date)
@@ -210,6 +246,7 @@ router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const [y, m] = String(month).split('-').map(Number)
     const from = `${month}-01`
     const lastDay = new Date(y, m, 0).getDate()
@@ -223,11 +260,11 @@ router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
           COUNT(*) FILTER (WHERE status IN ('pending', 'done'))::int AS paid_count,
           COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
         FROM bookings
-        WHERE booking_date BETWEEN $1 AND $2
+        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3
         GROUP BY booking_date
         ORDER BY date ASC
       `,
-      [from, to]
+      [shopId, from, to]
     )
 
     const days = result.rows.map((row) => ({
@@ -261,15 +298,13 @@ router.get('/revenue/summary', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const [y, m] = String(month).split('-').map(Number)
     const from = `${month}-01`
     const lastDay = new Date(y, m, 0).getDate()
     const to = `${month}-${String(lastDay).padStart(2, '0')}`
 
-    const depositResult = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'deposit_amount'`
-    )
-    const depositRate = Number(depositResult.rows[0]?.setting_value) || 300
+    const depositRate = Number(await getShopSetting(pool, shopId, 'deposit_amount')) || 300
 
     const result = await pool.query(
       `
@@ -278,11 +313,11 @@ router.get('/revenue/summary', auth, admin, async (req, res) => {
           COUNT(*) FILTER (WHERE status = 'done')::int AS done_count,
           COALESCE(SUM(total) FILTER (WHERE status = 'done' AND total IS NOT NULL), 0)::numeric AS total_amount
         FROM bookings
-        WHERE booking_date BETWEEN $1 AND $2
+        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3
         GROUP BY booking_date
         ORDER BY date ASC
       `,
-      [from, to]
+      [shopId, from, to]
     )
 
     const days = result.rows.map((row) => {
@@ -342,7 +377,8 @@ router.post('/bookings', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
-    const hourError = await validateBookingStartHour(pool, booking_date, startHourNum)
+    const shopId = req.shop.id
+    const hourError = await validateBookingStartHour(pool, shopId, booking_date, startHourNum)
     if (hourError) {
       return res.status(400).json({ error: hourError })
     }
@@ -360,20 +396,20 @@ router.post('/bookings', auth, admin, async (req, res) => {
         throw err
       }
 
-      const isValidOptions = await validateOptionIds(client, optionIds, null)
+      const isValidOptions = await validateOptionIds(client, shopId, optionIds, null)
       if (!isValidOptions) {
         const err = new Error('รายการบริการที่เลือกไม่ถูกต้อง')
         err.status = 400
         throw err
       }
-      const requiredError = await validateRequiredOptions(client, optionIds, booking_date)
+      const requiredError = await validateRequiredOptions(client, shopId, optionIds, booking_date)
       if (requiredError) {
         const err = new Error(requiredError)
         err.status = 400
         throw err
       }
 
-      await assertSlotAvailable(client, booking_date, startHourNum)
+      await assertSlotAvailable(client, shopId, booking_date, startHourNum)
 
       const endHour = startHourNum + 2
       const completedAt = status === 'done' ? new Date() : null
@@ -381,11 +417,11 @@ router.post('/bookings', auth, admin, async (req, res) => {
 
       const inserted = await client.query(
         `
-          INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status, total, completed_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          INSERT INTO bookings (shop_id, user_id, booking_date, start_hour, end_hour, status, total, completed_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           RETURNING id
         `,
-        [user_id, booking_date, startHourNum, endHour, status, bookingTotal, completedAt]
+        [shopId, user_id, booking_date, startHourNum, endHour, status, bookingTotal, completedAt]
       )
       const bookingId = inserted.rows[0].id
 
@@ -402,7 +438,7 @@ router.post('/bookings', auth, admin, async (req, res) => {
         )
       }
 
-      return fetchAdminBookingWithOptions(client, bookingId)
+      return fetchAdminBookingWithOptions(client, shopId, bookingId)
     })
 
     res.status(201).json({
@@ -410,6 +446,7 @@ router.post('/bookings', auth, admin, async (req, res) => {
       message: status === 'done' ? 'บันทึกคิวย้อนหลังแล้ว (+10 คะแนน)' : 'เพิ่มคิวแล้ว',
       booking,
     })
+    notifyShopNewBooking(getPool(), shopId, booking.id).catch(() => null)
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     if (err.code === '23505') {
@@ -421,12 +458,13 @@ router.post('/bookings', auth, admin, async (req, res) => {
 
 router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
   const targetStatus = req.body?.status === 'pending' ? 'pending' : 'awaiting_payment'
+  const shopId = req.shop.id
 
   try {
     await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 FOR UPDATE`,
-        [req.params.id]
+        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
+        [req.params.id, shopId]
       )
       if (!existing.rows.length || existing.rows[0].status !== 'cancelled') {
         const err = new Error('ไม่พบคิวที่ยกเลิกแล้ว')
@@ -435,7 +473,7 @@ router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
       }
 
       const row = existing.rows[0]
-      await assertSlotAvailable(client, row.booking_date, row.start_hour, row.id)
+      await assertSlotAvailable(client, shopId, row.booking_date, row.start_hour, row.id)
 
       await client.query(
         `
@@ -444,9 +482,9 @@ router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
             status = $1,
             completed_at = NULL,
             created_at = CASE WHEN $1 = 'awaiting_payment' THEN NOW() ELSE created_at END
-          WHERE id = $2 AND status = 'cancelled'
+          WHERE id = $2 AND shop_id = $3 AND status = 'cancelled'
         `,
-        [targetStatus, row.id]
+        [targetStatus, row.id, shopId]
       )
     })
 
@@ -465,14 +503,16 @@ router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
 router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         UPDATE bookings
         SET status = 'cancelled'
         WHERE id = $1
+          AND shop_id = $2
           AND status = 'awaiting_payment'
       `,
-      [req.params.id]
+      [req.params.id, shopId]
     )
 
     if (result.rowCount === 0) {
@@ -488,14 +528,16 @@ router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
 router.patch('/bookings/:id/cancel-paid', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         UPDATE bookings
         SET status = 'cancelled'
         WHERE id = $1
+          AND shop_id = $2
           AND status = 'pending'
       `,
-      [req.params.id]
+      [req.params.id, shopId]
     )
 
     if (result.rowCount === 0) {
@@ -512,11 +554,12 @@ router.patch('/bookings/:id/cancel-paid', auth, admin, async (req, res) => {
 })
 
 router.delete('/bookings/:id', auth, admin, async (req, res) => {
+  const shopId = req.shop.id
   try {
     await withTransaction(async (client) => {
       const bookingRes = await client.query(
-        `SELECT id, status FROM bookings WHERE id = $1`,
-        [req.params.id]
+        `SELECT id, status FROM bookings WHERE id = $1 AND shop_id = $2`,
+        [req.params.id, shopId]
       )
       if (!bookingRes.rows.length) {
         const err = new Error('ไม่พบรายการจอง')
@@ -530,8 +573,8 @@ router.delete('/bookings/:id', auth, admin, async (req, res) => {
       }
       await client.query(`DELETE FROM point_logs WHERE booking_id = $1`, [req.params.id])
       const result = await client.query(
-        `DELETE FROM bookings WHERE id = $1 AND status = 'cancelled'`,
-        [req.params.id]
+        `DELETE FROM bookings WHERE id = $1 AND shop_id = $2 AND status = 'cancelled'`,
+        [req.params.id, shopId]
       )
       if (result.rowCount === 0) {
         const err = new Error('ไม่พบรายการจอง')
@@ -558,14 +601,15 @@ router.get('/blocks', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         SELECT id, block_date, start_hour, end_hour, is_full_day, note, created_at
         FROM booking_blocks
-        WHERE block_date BETWEEN $1 AND $2
+        WHERE shop_id = $1 AND block_date BETWEEN $2 AND $3
         ORDER BY block_date ASC, is_full_day DESC, start_hour ASC
       `,
-      [from, to]
+      [shopId, from, to]
     )
     res.json(result.rows)
   } catch (err) {
@@ -587,13 +631,15 @@ router.post('/blocks', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
-        INSERT INTO booking_blocks (block_date, start_hour, end_hour, is_full_day, note)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO booking_blocks (shop_id, block_date, start_hour, end_hour, is_full_day, note)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, block_date, start_hour, end_hour, is_full_day, note, created_at
       `,
       [
+        shopId,
         block_date,
         is_full_day ? null : start_hour,
         is_full_day ? null : end_hour,
@@ -631,6 +677,7 @@ router.post('/blocks/bulk', auth, admin, async (req, res) => {
   const blockNote = note || null
 
   try {
+    const shopId = req.shop.id
     const result = await withTransaction(async (client) => {
       let created = 0
       let skipped = 0
@@ -638,8 +685,8 @@ router.post('/blocks/bulk', auth, admin, async (req, res) => {
       for (const blockDate of dates) {
         if (fullDay) {
           const exists = await client.query(
-            `SELECT 1 FROM booking_blocks WHERE block_date = $1 AND is_full_day = true LIMIT 1`,
-            [blockDate]
+            `SELECT 1 FROM booking_blocks WHERE shop_id = $1 AND block_date = $2 AND is_full_day = true LIMIT 1`,
+            [shopId, blockDate]
           )
           if (exists.rows.length > 0) {
             skipped += 1
@@ -649,14 +696,15 @@ router.post('/blocks/bulk', auth, admin, async (req, res) => {
           const exists = await client.query(
             `
               SELECT 1 FROM booking_blocks
-              WHERE block_date = $1
+              WHERE shop_id = $1
+                AND block_date = $2
                 AND (
                   is_full_day = true
-                  OR (is_full_day = false AND start_hour = $2 AND end_hour = $3)
+                  OR (is_full_day = false AND start_hour = $3 AND end_hour = $4)
                 )
               LIMIT 1
             `,
-            [blockDate, startH, endH]
+            [shopId, blockDate, startH, endH]
           )
           if (exists.rows.length > 0) {
             skipped += 1
@@ -666,10 +714,10 @@ router.post('/blocks/bulk', auth, admin, async (req, res) => {
 
         await client.query(
           `
-            INSERT INTO booking_blocks (block_date, start_hour, end_hour, is_full_day, note)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO booking_blocks (shop_id, block_date, start_hour, end_hour, is_full_day, note)
+            VALUES ($1, $2, $3, $4, $5, $6)
           `,
-          [blockDate, startH, endH, fullDay, blockNote]
+          [shopId, blockDate, startH, endH, fullDay, blockNote]
         )
         created += 1
       }
@@ -691,7 +739,11 @@ router.post('/blocks/bulk', auth, admin, async (req, res) => {
 router.delete('/blocks/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`DELETE FROM booking_blocks WHERE id = $1`, [req.params.id])
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `DELETE FROM booking_blocks WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
+    )
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการปิดวันเวลา' })
@@ -714,14 +766,15 @@ router.get('/extra-hours', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         SELECT id, extra_date, start_hour, end_hour, note, created_at
         FROM booking_extra_hours
-        WHERE extra_date BETWEEN $1 AND $2
+        WHERE shop_id = $1 AND extra_date BETWEEN $2 AND $3
         ORDER BY extra_date ASC, start_hour ASC
       `,
-      [from, to]
+      [shopId, from, to]
     )
     res.json(result.rows)
   } catch (err) {
@@ -744,13 +797,14 @@ router.post('/extra-hours', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
-        INSERT INTO booking_extra_hours (extra_date, start_hour, end_hour, note)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO booking_extra_hours (shop_id, extra_date, start_hour, end_hour, note)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id, extra_date, start_hour, end_hour, note, created_at
       `,
-      [extra_date, start_hour, end_hour, note || null]
+      [shopId, extra_date, start_hour, end_hour, note || null]
     )
     res.status(201).json({ success: true, extra: result.rows[0] })
   } catch (err) {
@@ -761,7 +815,11 @@ router.post('/extra-hours', auth, admin, async (req, res) => {
 router.delete('/extra-hours/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`DELETE FROM booking_extra_hours WHERE id = $1`, [req.params.id])
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `DELETE FROM booking_extra_hours WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
+    )
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการเปิดเพิ่ม' })
@@ -775,10 +833,7 @@ router.delete('/extra-hours/:id', auth, admin, async (req, res) => {
 router.get('/settings/deposit', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'deposit_amount'`
-    )
-    const value = result.rows[0]?.setting_value || '300'
+    const value = await getShopSetting(pool, req.shop.id, 'deposit_amount')
     res.json({ deposit_amount: Number(value) || 300 })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -793,15 +848,117 @@ router.patch('/settings/deposit', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
-    await pool.query(
-      `
-        UPDATE app_settings
-        SET setting_value = $1, updated_at = NOW()
-        WHERE setting_key = 'deposit_amount'
-      `,
-      [String(amount)]
-    )
+    await setShopSetting(pool, req.shop.id, 'deposit_amount', amount)
     res.json({ success: true, deposit_amount: amount })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/coupon', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getCouponSettings(pool, req.shop.id)
+    res.json({
+      discount_percent: settings.discountPercent,
+      required_points: settings.requiredPoints,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/coupon', auth, admin, async (req, res) => {
+  const discountPercent = Number(req.body?.discount_percent)
+  const requiredPoints = Number(req.body?.required_points)
+  if (!Number.isInteger(discountPercent) || discountPercent < 1 || discountPercent > 100) {
+    return res.status(400).json({ error: 'discount_percent ต้องอยู่ระหว่าง 1-100' })
+  }
+  if (!Number.isInteger(requiredPoints) || requiredPoints < 1) {
+    return res.status(400).json({ error: 'required_points ต้องมากกว่า 0' })
+  }
+  try {
+    const pool = getPool()
+    const settings = await setCouponSettings(pool, req.shop.id, { discountPercent, requiredPoints })
+    res.json({
+      success: true,
+      discount_percent: settings.discountPercent,
+      required_points: settings.requiredPoints,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/line-push', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getLinePushSettings(pool, req.shop.id)
+    res.json({
+      enabled: settings.pushEnabledFlag,
+      push_to_id: settings.pushToId,
+      token_masked: settings.tokenMasked,
+      token_configured: settings.tokenConfigured,
+      token_from_env: settings.tokenFromEnv,
+      notify_template: settings.notifyTemplate,
+      default_template: LINE_NOTIFY_DEFAULT_TEMPLATE,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/line-push', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const partial = {}
+    if (typeof req.body?.enabled === 'boolean') partial.enabled = req.body.enabled
+    if (req.body?.push_to_id != null) partial.pushToId = req.body.push_to_id
+    if (req.body?.notify_template != null) partial.notifyTemplate = req.body.notify_template
+    if (req.body?.channel_access_token != null && !process.env.LINE_BOT_CHANNEL_ACCESS_TOKEN) {
+      partial.channelAccessToken = req.body.channel_access_token
+    }
+    const settings = await setLinePushSettings(pool, req.shop.id, partial)
+    res.json({
+      success: true,
+      enabled: settings.pushEnabledFlag,
+      push_to_id: settings.pushToId,
+      token_masked: settings.tokenMasked,
+      token_configured: settings.tokenConfigured,
+      token_from_env: settings.tokenFromEnv,
+      notify_template: settings.notifyTemplate,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/settings/line-push/test', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const testMessage = req.body?.message
+      || `✅ ทดสอบแจ้งเตือน LINE จาก ${req.shop.name}\nเวลา: ${new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })}`
+    const result = await notifyShopNewBooking(pool, shopId, null, {
+      test: true,
+      testMessage,
+    })
+    if (result.skipped) {
+      return res.status(400).json({
+        error: 'ยังตั้งค่า LINE ไม่ครบ — เปิดใช้งาน Channel Access Token และ User/Group ID',
+      })
+    }
+    if (!result.ok) {
+      if (result.status === 401) {
+        return res.status(502).json({
+          error: 'Channel Access Token ไม่ถูกต้อง — กด Issue ใหม่ที่ LINE Developers แล้วอัปเดตใน Render (LINE_BOT_CHANNEL_ACCESS_TOKEN) หรือแอดมิน (อย่าใส่ Channel secret)',
+        })
+      }
+      return res.status(502).json({
+        error: result.error || 'ส่ง LINE ไม่สำเร็จ ตรวจสอบ Token และ User/Group ID',
+      })
+    }
+    res.json({ success: true, message: 'ส่งข้อความทดสอบแล้ว' })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -810,7 +967,7 @@ router.patch('/settings/deposit', auth, admin, async (req, res) => {
 router.get('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const settings = await getUnpaidExpireSettings(pool)
+    const settings = await getUnpaidExpireSettings(pool, req.shop.id)
     res.json({
       enabled: settings.enabled,
       expire_hours: settings.expireHours,
@@ -831,15 +988,10 @@ router.patch('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
-    await pool.query(
-      `
-        INSERT INTO app_settings (setting_key, setting_value)
-        VALUES ('unpaid_auto_cancel_enabled', $1), ('unpaid_expire_hours', $2)
-        ON CONFLICT (setting_key) DO UPDATE
-          SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
-      `,
-      [enabled ? 'true' : 'false', String(hours)]
-    )
+    await setShopSettings(pool, req.shop.id, {
+      unpaid_auto_cancel_enabled: enabled ? 'true' : 'false',
+      unpaid_expire_hours: String(hours),
+    })
     res.json({ success: true, enabled, expire_hours: hours })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -849,7 +1001,7 @@ router.patch('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
 router.get('/settings/shop-hours', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const hours = await getShopHours(pool)
+    const hours = await getShopHours(pool, req.shop.id)
     res.json({
       open_hour: hours.openHour,
       last_booking_hour: hours.lastBookingHour,
@@ -868,12 +1020,10 @@ router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
     return res.status(400).json({ error: 'last_booking_hour ต้องมากกว่า open_hour อย่างน้อย 2 และไม่เกิน 22' })
   try {
     const pool = getPool()
-    await pool.query(
-      `INSERT INTO app_settings (setting_key, setting_value)
-       VALUES ('shop_open_hour', $1), ('shop_last_booking_hour', $2)
-       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
-      [String(open), String(last)]
-    )
+    await setShopSettings(pool, req.shop.id, {
+      shop_open_hour: String(open),
+      shop_last_booking_hour: String(last),
+    })
     res.json({ success: true, open_hour: open, last_booking_hour: last })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -883,7 +1033,7 @@ router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
 router.get('/settings/advance-days', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const settings = await getAdvanceSettings(pool)
+    const settings = await getAdvanceSettings(pool, req.shop.id)
     res.json({
       advance_days: settings.advanceDays,
       book_until_date: settings.bookUntilDate,
@@ -900,12 +1050,10 @@ router.patch('/settings/advance-days', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
     const bookUntil = computeBookUntilDate(days, todayYmdBangkok())
-    await pool.query(
-      `INSERT INTO app_settings (setting_key, setting_value)
-       VALUES ('book_advance_days', $1), ('book_until_date', $2)
-       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
-      [String(days), bookUntil]
-    )
+    await setShopSettings(pool, req.shop.id, {
+      book_advance_days: String(days),
+      book_until_date: bookUntil,
+    })
     res.json({ success: true, advance_days: days, book_until_date: bookUntil })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -915,10 +1063,8 @@ router.patch('/settings/advance-days', auth, admin, async (req, res) => {
 router.get('/settings/booking-display', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'booking_display_mode'`
-    )
-    const mode = result.rows[0]?.setting_value === 'slots_2h' ? 'slots_2h' : 'normal'
+    const value = await getShopSetting(pool, req.shop.id, 'booking_display_mode')
+    const mode = value === 'slots_2h' ? 'slots_2h' : 'normal'
     res.json({ display_mode: mode })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -929,13 +1075,28 @@ router.patch('/settings/booking-display', auth, admin, async (req, res) => {
   const mode = req.body?.display_mode === 'slots_2h' ? 'slots_2h' : 'normal'
   try {
     const pool = getPool()
-    await pool.query(
-      `INSERT INTO app_settings (setting_key, setting_value)
-       VALUES ('booking_display_mode', $1)
-       ON CONFLICT (setting_key) DO UPDATE SET setting_value = $1, updated_at = NOW()`,
-      [mode]
-    )
+    await setShopSetting(pool, req.shop.id, 'booking_display_mode', mode)
     res.json({ success: true, display_mode: mode })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/ui', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getUiSettings(pool, req.shop.id)
+    res.json(settings)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/ui', auth, admin, async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await setUiSettings(pool, req.shop.id, req.body || {})
+    res.json({ success: true, settings })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -973,12 +1134,13 @@ router.patch('/coupons/use', auth, admin, async (req, res) => {
 router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    await expireUnpaidBookings(pool)
-    const settings = await getUnpaidExpireSettings(pool)
+    const shopId = req.shop.id
+    await expireUnpaidBookings(pool, shopId)
+    const settings = await getUnpaidExpireSettings(pool, shopId)
 
     const found = await pool.query(
-      `SELECT id, status, created_at FROM bookings WHERE id = $1`,
-      [req.params.id]
+      `SELECT id, status, created_at FROM bookings WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
     )
     const row = found.rows[0]
     if (!row || row.status !== 'awaiting_payment') {
@@ -987,8 +1149,8 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
 
     if (isBookingExpired(row.created_at, settings.expireHours, settings.enabled)) {
       await pool.query(
-        `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND status = 'awaiting_payment'`,
-        [req.params.id]
+        `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND shop_id = $2 AND status = 'awaiting_payment'`,
+        [req.params.id, shopId]
       )
       return res.status(409).json({ error: 'คิวหมดเวลาชำระแล้ว ถูกยกเลิกอัตโนมัติ' })
     }
@@ -998,9 +1160,10 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
         UPDATE bookings
         SET status = 'pending'
         WHERE id = $1
+          AND shop_id = $2
           AND status = 'awaiting_payment'
       `,
-      [req.params.id]
+      [req.params.id, shopId]
     )
 
     if (result.rowCount === 0) {
@@ -1015,6 +1178,7 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
 
 router.patch('/bookings/:id/revert-payment', auth, admin, async (req, res) => {
   try {
+    const shopId = req.shop.id
     const result = await getPool().query(
       `
         UPDATE bookings
@@ -1022,9 +1186,10 @@ router.patch('/bookings/:id/revert-payment', auth, admin, async (req, res) => {
           status = 'awaiting_payment',
           created_at = NOW()
         WHERE id = $1
+          AND shop_id = $2
           AND status = 'pending'
       `,
-      [req.params.id]
+      [req.params.id, shopId]
     )
 
     if (result.rowCount === 0) {
@@ -1047,10 +1212,11 @@ router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
   }
 
   try {
+    const shopId = req.shop.id
     await withTransaction(async (client) => {
       const found = await client.query(
-        `SELECT * FROM bookings WHERE id = $1 AND status = 'pending'`,
-        [req.params.id]
+        `SELECT * FROM bookings WHERE id = $1 AND shop_id = $2 AND status = 'pending'`,
+        [req.params.id, shopId]
       )
       if (!found.rows[0]) {
         const err = new Error('ไม่พบคิว หรือทำเสร็จแล้ว')
@@ -1060,8 +1226,8 @@ router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
       const booking = found.rows[0]
 
       await client.query(
-        `UPDATE bookings SET status = 'done', completed_at = NOW(), total = $2 WHERE id = $1`,
-        [booking.id, total]
+        `UPDATE bookings SET status = 'done', completed_at = NOW(), total = $3 WHERE id = $1 AND shop_id = $2`,
+        [booking.id, shopId, total]
       )
 
       await client.query(
@@ -1115,10 +1281,11 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
   }
 
   try {
+    const shopId = req.shop.id
     const booking = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 FOR UPDATE`,
-        [req.params.id]
+        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
+        [req.params.id, shopId]
       )
       if (existing.rowCount === 0) throw { status: 404, message: 'ไม่พบคิว' }
       const row = existing.rows[0]
@@ -1143,24 +1310,24 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         if (!optionIds.length) {
           throw { status: 400, message: 'กรุณาเลือกบริการอย่างน้อย 1 รายการ' }
         }
-        const isValidOptions = await validateOptionIds(client, optionIds, null)
+        const isValidOptions = await validateOptionIds(client, shopId, optionIds, null)
         if (!isValidOptions) {
           throw { status: 400, message: 'รายการบริการที่เลือกไม่ถูกต้อง' }
         }
-        const requiredError = await validateRequiredOptions(client, optionIds, effectiveDate)
+        const requiredError = await validateRequiredOptions(client, shopId, optionIds, effectiveDate)
         if (requiredError) {
           throw { status: 400, message: requiredError }
         }
       }
 
       if (hasStartHour || hasBookingDate) {
-        const hourError = await validateBookingStartHour(client, effectiveDate, effectiveStartHour)
+        const hourError = await validateBookingStartHour(client, shopId, effectiveDate, effectiveStartHour)
         if (hourError) {
           throw { status: 400, message: hourError }
         }
-        await assertSlotNotBlocked(client, effectiveDate, effectiveStartHour)
+        await assertSlotNotBlocked(client, shopId, effectiveDate, effectiveStartHour)
         if (dateChanged || hourChanged) {
-          await assertSlotAvailable(client, effectiveDate, effectiveStartHour, req.params.id)
+          await assertSlotAvailable(client, shopId, effectiveDate, effectiveStartHour, req.params.id)
         }
       }
 
@@ -1193,14 +1360,16 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         paramIdx += 1
       }
 
-      params.push(req.params.id)
+      params.push(req.params.id, shopId)
       const idParam = paramIdx
+      const shopParam = paramIdx + 1
 
       const result = await client.query(
         `
           UPDATE bookings
           SET ${updates.join(', ')}
           WHERE id = $${idParam}
+            AND shop_id = $${shopParam}
             AND status != 'cancelled'
           RETURNING id, user_id, booking_date, start_hour, end_hour, status, total, created_at, completed_at
         `,
@@ -1244,7 +1413,9 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
 router.get('/users', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `
       SELECT
         u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note,
         u.is_admin, u.total_points, u.created_at,
@@ -1252,10 +1423,12 @@ router.get('/users', auth, admin, async (req, res) => {
         SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
         SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings
       FROM users u
-      LEFT JOIN bookings b ON b.user_id = u.id
+      LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
       GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
       ORDER BY u.is_admin DESC, u.total_points DESC
-    `)
+    `,
+      [shopId]
+    )
     res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1265,6 +1438,7 @@ router.get('/users', auth, admin, async (req, res) => {
 router.get('/users/:id/bookings', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const userRes = await pool.query(
       `SELECT id, name, email, provider, provider_id, total_points, created_at FROM users WHERE id = $1`,
       [req.params.id]
@@ -1285,10 +1459,10 @@ router.get('/users/:id/bookings', auth, admin, async (req, res) => {
           b.completed_at,
           b.total
         FROM bookings b
-        WHERE b.user_id = $1
+        WHERE b.user_id = $1 AND b.shop_id = $2
         ORDER BY b.booking_date DESC, b.start_hour DESC
       `,
-      [req.params.id]
+      [req.params.id, shopId]
     )
 
     const optionsRes = await pool.query(
@@ -1297,10 +1471,10 @@ router.get('/users/:id/bookings', auth, admin, async (req, res) => {
         FROM bookings b
         JOIN booking_nailoptions bn ON bn.booking_id = b.id
         JOIN nailoption n ON n.id = bn.nailoption_id
-        WHERE b.user_id = $1
+        WHERE b.user_id = $1 AND b.shop_id = $2
         ORDER BY b.booking_date DESC, b.start_hour DESC, n.option_name ASC
       `,
-      [req.params.id]
+      [req.params.id, shopId]
     )
 
     const optionsByBookingId = {}
@@ -1439,6 +1613,7 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
     }
 
     const user = result.rows[0]
+    const shopId = req.shop.id
     const stats = await pool.query(
       `
         SELECT
@@ -1446,9 +1621,9 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
           SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings
         FROM bookings
-        WHERE user_id = $1
+        WHERE user_id = $1 AND shop_id = $2
       `,
-      [user.id]
+      [user.id, shopId]
     )
 
     res.json({
@@ -1471,6 +1646,7 @@ router.delete('/users/:id', auth, admin, async (req, res) => {
     return res.status(400).json({ error: 'ไม่สามารถลบบัญชีของตัวเองได้' })
   }
   try {
+    const shopId = req.shop.id
     await withTransaction(async (client) => {
       const userRes = await client.query(
         `SELECT id, is_admin FROM users WHERE id = $1`,
@@ -1486,13 +1662,16 @@ router.delete('/users/:id', auth, admin, async (req, res) => {
         err.status = 400
         throw err
       }
-      await client.query(`DELETE FROM point_logs WHERE user_id = $1`, [userId])
+      await client.query(
+        `DELETE FROM point_logs WHERE user_id = $1 AND booking_id IN (SELECT id FROM bookings WHERE user_id = $1 AND shop_id = $2)`,
+        [userId, shopId]
+      )
       await client.query(
         `DELETE FROM booking_nailoptions
-         WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = $1)`,
-        [userId]
+         WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = $1 AND shop_id = $2)`,
+        [userId, shopId]
       )
-      await client.query(`DELETE FROM bookings WHERE user_id = $1`, [userId])
+      await client.query(`DELETE FROM bookings WHERE user_id = $1 AND shop_id = $2`, [userId, shopId])
       await client.query(`DELETE FROM coupons WHERE user_id = $1`, [userId])
       await client.query(`DELETE FROM users WHERE id = $1`, [userId])
     })
@@ -1533,12 +1712,17 @@ function parseOptionalColor(value) {
 router.get('/nailoptions', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `
       SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
              show_from_date, show_to_date, sort_order, created_at, updated_at
       FROM nailoption
+      WHERE shop_id = $1
       ORDER BY sort_order ASC, created_at ASC, option_name ASC
-    `)
+    `,
+      [shopId]
+    )
     res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1571,19 +1755,23 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
-    const orderRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM nailoption`)
+    const shopId = req.shop.id
+    const orderRes = await pool.query(
+      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM nailoption WHERE shop_id = $1`,
+      [shopId]
+    )
     const sort_order = Number(orderRes.rows[0]?.next_order) || 1
     const result = await pool.query(
       `
         INSERT INTO nailoption (
-          option_name, description, price, duration_min, is_active, is_required, color,
+          shop_id, option_name, description, price, duration_min, is_active, is_required, color,
           show_from_date, show_to_date, sort_order
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
                   show_from_date, show_to_date, sort_order, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, sort_order]
+      [shopId, option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, sort_order]
     )
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
@@ -1617,6 +1805,7 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         UPDATE nailoption
@@ -1631,11 +1820,11 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
           show_from_date = $8,
           show_to_date = $9,
           updated_at = NOW()
-        WHERE id = $10
+        WHERE id = $10 AND shop_id = $11
         RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
                   show_from_date, show_to_date, sort_order, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, req.params.id]
+      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, req.params.id, shopId]
     )
 
     if (result.rowCount === 0) {
@@ -1658,6 +1847,7 @@ router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
   }
 
   try {
+    const shopId = req.shop.id
     await withTransaction(async (client) => {
       let listRes
       if (scopeEveryDay) {
@@ -1665,31 +1855,35 @@ router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
           `
             SELECT id, sort_order
             FROM nailoption
-            WHERE show_from_date IS NULL AND show_to_date IS NULL
+            WHERE shop_id = $1 AND show_from_date IS NULL AND show_to_date IS NULL
             ORDER BY sort_order ASC, created_at ASC, option_name ASC
             FOR UPDATE
-          `
+          `,
+          [shopId]
         )
       } else if (scopeDate) {
         listRes = await client.query(
           `
             SELECT id, sort_order
             FROM nailoption
-            WHERE (show_from_date IS NULL OR show_from_date <= $1)
-              AND (show_to_date IS NULL OR show_to_date >= $1)
+            WHERE shop_id = $1
+              AND (show_from_date IS NULL OR show_from_date <= $2)
+              AND (show_to_date IS NULL OR show_to_date >= $2)
             ORDER BY sort_order ASC, created_at ASC, option_name ASC
             FOR UPDATE
           `,
-          [scopeDate]
+          [shopId, scopeDate]
         )
       } else {
         listRes = await client.query(
           `
             SELECT id, sort_order
             FROM nailoption
+            WHERE shop_id = $1
             ORDER BY sort_order ASC, created_at ASC, option_name ASC
             FOR UPDATE
-          `
+          `,
+          [shopId]
         )
       }
 
@@ -1707,14 +1901,14 @@ router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
       const current = list[index]
       const neighbor = list[swapIndex]
 
-      await client.query(`UPDATE nailoption SET sort_order = $1, updated_at = NOW() WHERE id = $2`, [
-        neighbor.sort_order,
-        current.id,
-      ])
-      await client.query(`UPDATE nailoption SET sort_order = $1, updated_at = NOW() WHERE id = $2`, [
-        current.sort_order,
-        neighbor.id,
-      ])
+      await client.query(
+        `UPDATE nailoption SET sort_order = $1, updated_at = NOW() WHERE id = $2 AND shop_id = $3`,
+        [neighbor.sort_order, current.id, shopId]
+      )
+      await client.query(
+        `UPDATE nailoption SET sort_order = $1, updated_at = NOW() WHERE id = $2 AND shop_id = $3`,
+        [current.sort_order, neighbor.id, shopId]
+      )
     })
 
     res.json({ success: true, message: 'จัดลำดับแล้ว' })
@@ -1727,6 +1921,7 @@ router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
 router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const optionId = req.params.id
 
     const activeUse = await pool.query(
@@ -1735,10 +1930,11 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
         FROM booking_nailoptions bn
         JOIN bookings b ON b.id = bn.booking_id
         WHERE bn.nailoption_id = $1
+          AND b.shop_id = $2
           AND b.status IN ('awaiting_payment', 'pending')
         LIMIT 1
       `,
-      [optionId]
+      [optionId, shopId]
     )
 
     if (activeUse.rows.length > 0) {
@@ -1750,7 +1946,10 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
 
     await pool.query(`DELETE FROM booking_nailoptions WHERE nailoption_id = $1`, [optionId])
 
-    const result = await pool.query(`DELETE FROM nailoption WHERE id = $1`, [optionId])
+    const result = await pool.query(
+      `DELETE FROM nailoption WHERE id = $1 AND shop_id = $2`,
+      [optionId, shopId]
+    )
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการบริการ' })
@@ -1772,11 +1971,16 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
 router.get('/service-locations', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `
       SELECT id, name, color, description, sort_order, is_active, created_at, updated_at
       FROM service_locations
+      WHERE shop_id = $1
       ORDER BY sort_order ASC, name ASC
-    `)
+    `,
+      [shopId]
+    )
     res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1795,13 +1999,14 @@ router.post('/service-locations', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
-        INSERT INTO service_locations (name, color, description, sort_order, is_active)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO service_locations (shop_id, name, color, description, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, name, color, description, sort_order, is_active, created_at, updated_at
       `,
-      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active]
+      [shopId, name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active]
     )
     res.status(201).json({ success: true, location: result.rows[0] })
   } catch (err) {
@@ -1824,6 +2029,7 @@ router.patch('/service-locations/:id', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         UPDATE service_locations
@@ -1834,10 +2040,10 @@ router.patch('/service-locations/:id', auth, admin, async (req, res) => {
           sort_order = $4,
           is_active = $5,
           updated_at = NOW()
-        WHERE id = $6
+        WHERE id = $6 AND shop_id = $7
         RETURNING id, name, color, description, sort_order, is_active, created_at, updated_at
       `,
-      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active, req.params.id]
+      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active, req.params.id, shopId]
     )
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบสถานที่' })
@@ -1854,7 +2060,11 @@ router.patch('/service-locations/:id', auth, admin, async (req, res) => {
 router.delete('/service-locations/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`DELETE FROM service_locations WHERE id = $1`, [req.params.id])
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `DELETE FROM service_locations WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
+    )
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบสถานที่' })
     }
@@ -1867,12 +2077,15 @@ router.delete('/service-locations/:id', auth, admin, async (req, res) => {
 router.get('/showcase-clips', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const result = await pool.query(
       `
         SELECT id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
         FROM showcase_clips
+        WHERE shop_id = $1
         ORDER BY sort_order ASC, created_at DESC
-      `
+      `,
+      [shopId]
     )
     res.json(result.rows)
   } catch (err) {
@@ -1898,18 +2111,22 @@ router.post('/showcase-clips', auth, admin, async (req, res) => {
     }
 
     const pool = getPool()
-    const orderRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM showcase_clips`)
+    const shopId = req.shop.id
+    const orderRes = await pool.query(
+      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM showcase_clips WHERE shop_id = $1`,
+      [shopId]
+    )
     const sort_order = Number(orderRes.rows[0]?.next_order) || 1
 
     const thumbnail_url = await fetchShowcaseThumbnail(resolved.source, resolved.tiktok_url)
 
     const result = await pool.query(
       `
-        INSERT INTO showcase_clips (source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO showcase_clips (shop_id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [resolved.source, resolved.tiktok_url, resolved.video_id, title, thumbnail_url, sort_order, is_active]
+      [shopId, resolved.source, resolved.tiktok_url, resolved.video_id, title, thumbnail_url, sort_order, is_active]
     )
 
     res.status(201).json({ success: true, clip: result.rows[0] })
@@ -1929,7 +2146,11 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
 
   try {
     const pool = getPool()
-    const existing = await pool.query(`SELECT * FROM showcase_clips WHERE id = $1`, [req.params.id])
+    const shopId = req.shop.id
+    const existing = await pool.query(
+      `SELECT * FROM showcase_clips WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
+    )
     if (!existing.rows.length) {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
     }
@@ -1978,10 +2199,10 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
           is_active = $6,
           sort_order = $7,
           updated_at = NOW()
-        WHERE id = $8
+        WHERE id = $8 AND shop_id = $9
         RETURNING id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [source, tiktok_url, video_id, title, thumbnail_url, is_active, sort_order, req.params.id]
+      [source, tiktok_url, video_id, title, thumbnail_url, is_active, sort_order, req.params.id, shopId]
     )
 
     res.json({ success: true, clip: result.rows[0] })
@@ -1996,9 +2217,10 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
 router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
+    const shopId = req.shop.id
     const existing = await pool.query(
-      `SELECT id, source, tiktok_url FROM showcase_clips WHERE id = $1`,
-      [req.params.id]
+      `SELECT id, source, tiktok_url FROM showcase_clips WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
     )
     if (!existing.rows.length) {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
@@ -2014,10 +2236,10 @@ router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, re
       `
         UPDATE showcase_clips
         SET thumbnail_url = $1, updated_at = NOW()
-        WHERE id = $2
+        WHERE id = $2 AND shop_id = $3
         RETURNING id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, is_active, created_at, updated_at
       `,
-      [thumbnail_url, req.params.id]
+      [thumbnail_url, req.params.id, shopId]
     )
 
     res.json({ success: true, message: 'ดึงรูปปกแล้ว', clip: result.rows[0] })
@@ -2029,7 +2251,11 @@ router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, re
 router.delete('/showcase-clips/:id', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(`DELETE FROM showcase_clips WHERE id = $1`, [req.params.id])
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `DELETE FROM showcase_clips WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
+    )
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
     }
@@ -2043,14 +2269,17 @@ router.patch('/showcase-clips/:id/move', auth, admin, async (req, res) => {
   const direction = req.body?.direction === 'down' ? 'down' : 'up'
 
   try {
+    const shopId = req.shop.id
     await withTransaction(async (client) => {
       const allRes = await client.query(
         `
           SELECT id, sort_order
           FROM showcase_clips
+          WHERE shop_id = $1
           ORDER BY sort_order ASC, created_at ASC
           FOR UPDATE
-        `
+        `,
+        [shopId]
       )
       const list = allRes.rows
       const index = list.findIndex((row) => row.id === req.params.id)
@@ -2067,12 +2296,12 @@ router.patch('/showcase-clips/:id/move', auth, admin, async (req, res) => {
       const neighbor = list[swapIndex]
 
       await client.query(
-        `UPDATE showcase_clips SET sort_order = $1, updated_at = NOW() WHERE id = $2`,
-        [neighbor.sort_order, current.id]
+        `UPDATE showcase_clips SET sort_order = $1, updated_at = NOW() WHERE id = $2 AND shop_id = $3`,
+        [neighbor.sort_order, current.id, shopId]
       )
       await client.query(
-        `UPDATE showcase_clips SET sort_order = $1, updated_at = NOW() WHERE id = $2`,
-        [current.sort_order, neighbor.id]
+        `UPDATE showcase_clips SET sort_order = $1, updated_at = NOW() WHERE id = $2 AND shop_id = $3`,
+        [current.sort_order, neighbor.id, shopId]
       )
     })
 

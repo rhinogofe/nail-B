@@ -1,5 +1,6 @@
 const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
+const resolveShop = require('../middleware/resolveShop')
 const { getPool } = require('../db/pool')
 const { getAdvanceSettings, validateBookingDateRange } = require('../utils/bookingWindow')
 const {
@@ -7,17 +8,32 @@ const {
   validateOptionIds,
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
+const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { getShopHours, validateBookingStartHour } = require('../utils/bookingHours')
+const { getUiSettings } = require('../utils/shopUiSettings')
+const { getShopSetting } = require('../utils/shopSettings')
 const {
   getUnpaidExpireSettings,
   isBookingExpired,
   expireUnpaidBookings,
 } = require('../utils/unpaidExpire')
 
+router.use(resolveShop)
+
+router.get('/ui-settings', async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getUiSettings(pool, req.shop.id)
+    res.json(settings)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/shop-hours', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const hours = await getShopHours(pool)
+    const hours = await getShopHours(pool, req.shop.id)
     res.json({ open_hour: hours.openHour, last_booking_hour: hours.lastBookingHour })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -27,7 +43,7 @@ router.get('/shop-hours', auth, async (req, res) => {
 router.get('/advance-days', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const settings = await getAdvanceSettings(pool)
+    const settings = await getAdvanceSettings(pool, req.shop.id)
     res.json({
       advance_days: settings.advanceDays,
       book_until_date: settings.bookUntilDate,
@@ -40,10 +56,8 @@ router.get('/advance-days', auth, async (req, res) => {
 router.get('/booking-display', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'booking_display_mode'`
-    )
-    const mode = result.rows[0]?.setting_value === 'slots_2h' ? 'slots_2h' : 'normal'
+    const value = await getShopSetting(pool, req.shop.id, 'booking_display_mode')
+    const mode = value === 'slots_2h' ? 'slots_2h' : 'normal'
     res.json({ display_mode: mode })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -53,10 +67,7 @@ router.get('/booking-display', auth, async (req, res) => {
 router.get('/deposit-setting', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const result = await pool.query(
-      `SELECT setting_value FROM app_settings WHERE setting_key = 'deposit_amount'`
-    )
-    const value = result.rows[0]?.setting_value || '300'
+    const value = await getShopSetting(pool, req.shop.id, 'deposit_amount')
     res.json({ deposit_amount: Number(value) || 300 })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -66,7 +77,7 @@ router.get('/deposit-setting', auth, async (req, res) => {
 router.get('/unpaid-expire-setting', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const settings = await getUnpaidExpireSettings(pool)
+    const settings = await getUnpaidExpireSettings(pool, req.shop.id)
     res.json({
       enabled: settings.enabled,
       expire_hours: settings.expireHours,
@@ -84,7 +95,7 @@ router.get('/options', auth, async (req, res) => {
 
   try {
     const pool = getPool()
-    const params = []
+    const params = [req.shop.id]
     let dateFilter = ''
     if (date) {
       params.push(String(date))
@@ -99,7 +110,7 @@ router.get('/options', auth, async (req, res) => {
         SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
                show_from_date, show_to_date
         FROM nailoption
-        WHERE is_active = true
+        WHERE shop_id = $1 AND is_active = true
         ${dateFilter}
         ORDER BY sort_order ASC, option_name ASC
       `,
@@ -117,7 +128,7 @@ router.get('/', auth, async (req, res) => {
 
   try {
     const pool = getPool()
-    await expireUnpaidBookings(pool)
+    await expireUnpaidBookings(pool, req.shop.id)
     const result = await pool.query(
       `
         SELECT
@@ -128,24 +139,25 @@ router.get('/', auth, async (req, res) => {
           b.created_at,
           u.name        AS user_name,
           u.avatar_url  AS user_avatar,
-          CASE WHEN b.user_id = $2 THEN true ELSE false END AS is_mine
+          CASE WHEN b.user_id = $3 THEN true ELSE false END AS is_mine
         FROM bookings b
         JOIN users u ON u.id = b.user_id
-        WHERE b.booking_date = $1
+        WHERE b.shop_id = $1
+          AND b.booking_date = $2
           AND b.status != 'cancelled'
         ORDER BY b.start_hour
       `,
-      [date, req.user.id]
+      [req.shop.id, date, req.user.id]
     )
 
     const blocks = await pool.query(
       `
         SELECT id, block_date, start_hour, end_hour, is_full_day, note
         FROM booking_blocks
-        WHERE block_date = $1
+        WHERE shop_id = $1 AND block_date = $2
         ORDER BY is_full_day DESC, start_hour ASC
       `,
-      [date]
+      [req.shop.id, date]
     )
 
     res.json({
@@ -168,10 +180,10 @@ router.get('/blocks', auth, async (req, res) => {
       `
         SELECT id, block_date, start_hour, end_hour, is_full_day, note
         FROM booking_blocks
-        WHERE block_date BETWEEN $1 AND $2
+        WHERE shop_id = $1 AND block_date BETWEEN $2 AND $3
         ORDER BY block_date ASC, is_full_day DESC, start_hour ASC
       `,
-      [from, to]
+      [req.shop.id, from, to]
     )
     res.json(result.rows)
   } catch (err) {
@@ -189,10 +201,10 @@ router.get('/extra-hours', auth, async (req, res) => {
       `
         SELECT id, extra_date, start_hour, end_hour, note
         FROM booking_extra_hours
-        WHERE extra_date BETWEEN $1 AND $2
+        WHERE shop_id = $1 AND extra_date BETWEEN $2 AND $3
         ORDER BY extra_date ASC, start_hour ASC
       `,
-      [from, to]
+      [req.shop.id, from, to]
     )
     res.json(result.rows)
   } catch (err) {
@@ -210,21 +222,22 @@ router.post('/', auth, async (req, res) => {
 
   try {
     const pool = getPool()
-    await expireUnpaidBookings(pool)
-    const { bookUntilDate } = await getAdvanceSettings(pool)
+    const shopId = req.shop.id
+    await expireUnpaidBookings(pool, shopId)
+    const { bookUntilDate } = await getAdvanceSettings(pool, shopId)
     const dateError = validateBookingDateRange(booking_date, bookUntilDate)
     if (dateError) return res.status(400).json({ error: dateError })
 
-    const hourError = await validateBookingStartHour(pool, booking_date, start_hour)
+    const hourError = await validateBookingStartHour(pool, shopId, booking_date, start_hour)
     if (hourError) return res.status(400).json({ error: hourError })
 
     const uniqueOptionIds = [...new Set(option_ids.map(String))]
-    const isValidOptions = await validateOptionIds(pool, uniqueOptionIds, booking_date)
+    const isValidOptions = await validateOptionIds(pool, shopId, uniqueOptionIds, booking_date)
     if (!isValidOptions) {
       return res.status(400).json({ error: 'รายการบริการที่เลือกไม่ถูกต้อง' })
     }
 
-    const requiredError = await validateRequiredOptions(pool, uniqueOptionIds, booking_date)
+    const requiredError = await validateRequiredOptions(pool, shopId, uniqueOptionIds, booking_date)
     if (requiredError) {
       return res.status(400).json({ error: requiredError })
     }
@@ -233,13 +246,14 @@ router.post('/', auth, async (req, res) => {
       `
         SELECT id
         FROM bookings
-        WHERE booking_date = $1
+        WHERE shop_id = $1
+          AND booking_date = $2
           AND status != 'cancelled'
-          AND start_hour < $3
-          AND COALESCE(end_hour, start_hour + 2) > $2
+          AND start_hour < $4
+          AND COALESCE(end_hour, start_hour + 2) > $3
         LIMIT 1
       `,
-      [booking_date, start_hour, start_hour + 2]
+      [shopId, booking_date, start_hour, start_hour + 2]
     )
 
     if (overlap.rows.length > 0) {
@@ -250,14 +264,15 @@ router.post('/', auth, async (req, res) => {
       `
         SELECT id
         FROM booking_blocks
-        WHERE block_date = $1
+        WHERE shop_id = $1
+          AND block_date = $2
           AND (
             is_full_day = true
-            OR (start_hour < $3 AND end_hour > $2)
+            OR (start_hour < $4 AND end_hour > $3)
           )
         LIMIT 1
       `,
-      [booking_date, start_hour, start_hour + 2]
+      [shopId, booking_date, start_hour, start_hour + 2]
     )
 
     if (blocked.rows.length > 0) {
@@ -266,14 +281,16 @@ router.post('/', auth, async (req, res) => {
 
     const result = await pool.query(
       `
-        INSERT INTO bookings (user_id, booking_date, start_hour, end_hour, status)
-        VALUES ($1, $2, $3, $4, 'awaiting_payment')
+        INSERT INTO bookings (shop_id, user_id, booking_date, start_hour, end_hour, status)
+        VALUES ($1, $2, $3, $4, $5, 'awaiting_payment')
         RETURNING id, booking_date, start_hour, end_hour, status
       `,
-      [req.user.id, booking_date, start_hour, start_hour + 2]
+      [shopId, req.user.id, booking_date, start_hour, start_hour + 2]
     )
     await syncBookingOptions(pool, result.rows[0].id, uniqueOptionIds)
+    const bookingId = result.rows[0].id
     res.status(201).json({ success: true, booking: result.rows[0] })
+    notifyShopNewBooking(pool, shopId, bookingId).catch(() => null)
   } catch (err) {
     if (err.code === '23505') {
       return res.status(409).json({ error: 'เวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น' })
@@ -282,19 +299,71 @@ router.post('/', auth, async (req, res) => {
   }
 })
 
+router.get('/my', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    await expireUnpaidBookings(pool, req.shop.id)
+    const result = await pool.query(
+      `
+        SELECT
+          b.id,
+          b.booking_date,
+          b.start_hour,
+          b.end_hour,
+          b.status,
+          b.created_at,
+          b.completed_at,
+          b.total
+        FROM bookings b
+        WHERE b.shop_id = $1 AND b.user_id = $2
+        ORDER BY b.booking_date DESC, b.start_hour DESC
+      `,
+      [req.shop.id, req.user.id]
+    )
+
+    const optionsResult = await pool.query(
+      `
+        SELECT b.id AS booking_id, n.id AS option_id, n.option_name
+        FROM bookings b
+        JOIN booking_nailoptions bn ON bn.booking_id = b.id
+        JOIN nailoption n ON n.id = bn.nailoption_id
+        WHERE b.shop_id = $1 AND b.user_id = $2
+        ORDER BY b.booking_date DESC, b.start_hour DESC, n.option_name ASC
+      `,
+      [req.shop.id, req.user.id]
+    )
+
+    const optionsByBookingId = {}
+    for (const row of optionsResult.rows) {
+      if (!optionsByBookingId[row.booking_id]) optionsByBookingId[row.booking_id] = []
+      optionsByBookingId[row.booking_id].push({
+        id: row.option_id,
+        option_name: row.option_name,
+      })
+    }
+
+    res.json(result.rows.map((item) => ({
+      ...item,
+      nail_options: optionsByBookingId[item.id] || [],
+    })))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/:id/payment-info', auth, async (req, res) => {
   try {
     const pool = getPool()
-    await expireUnpaidBookings(pool)
-    const settings = await getUnpaidExpireSettings(pool)
+    await expireUnpaidBookings(pool, req.shop.id)
+    const settings = await getUnpaidExpireSettings(pool, req.shop.id)
 
     const result = await pool.query(
       `
         SELECT id, booking_date, start_hour, end_hour, status, created_at
         FROM bookings
-        WHERE id = $1 AND user_id = $2
+        WHERE id = $1 AND shop_id = $2 AND user_id = $3
       `,
-      [req.params.id, req.user.id]
+      [req.params.id, req.shop.id, req.user.id]
     )
 
     if (!result.rows[0]) {
@@ -333,68 +402,17 @@ router.delete('/:id', auth, async (req, res) => {
         UPDATE bookings
         SET status = 'cancelled'
         WHERE id = $1
-          AND user_id = $2
+          AND shop_id = $2
+          AND user_id = $3
           AND status = 'awaiting_payment'
       `,
-      [req.params.id, req.user.id]
+      [req.params.id, req.shop.id, req.user.id]
     )
 
     if (result.rowCount === 0)
       return res.status(404).json({ error: 'ไม่พบคิว หรือไม่สามารถยกเลิกได้' })
 
     res.json({ success: true })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-router.get('/my', auth, async (req, res) => {
-  try {
-    const pool = getPool()
-    await expireUnpaidBookings(pool)
-    const result = await pool.query(
-      `
-        SELECT
-          b.id,
-          b.booking_date,
-          b.start_hour,
-          b.end_hour,
-          b.status,
-          b.created_at,
-          b.completed_at,
-          b.total
-        FROM bookings b
-        WHERE b.user_id = $1
-        ORDER BY b.booking_date DESC, b.start_hour DESC
-      `,
-      [req.user.id]
-    )
-
-    const optionsResult = await pool.query(
-      `
-        SELECT b.id AS booking_id, n.id AS option_id, n.option_name
-        FROM bookings b
-        JOIN booking_nailoptions bn ON bn.booking_id = b.id
-        JOIN nailoption n ON n.id = bn.nailoption_id
-        WHERE b.user_id = $1
-        ORDER BY b.booking_date DESC, b.start_hour DESC, n.option_name ASC
-      `,
-      [req.user.id]
-    )
-
-    const optionsByBookingId = {}
-    for (const row of optionsResult.rows) {
-      if (!optionsByBookingId[row.booking_id]) optionsByBookingId[row.booking_id] = []
-      optionsByBookingId[row.booking_id].push({
-        id: row.option_id,
-        option_name: row.option_name,
-      })
-    }
-
-    res.json(result.rows.map((item) => ({
-      ...item,
-      nail_options: optionsByBookingId[item.id] || [],
-    })))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

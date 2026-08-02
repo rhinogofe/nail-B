@@ -1,13 +1,11 @@
-async function getShopHours(pool) {
-  const result = await pool.query(
-    `SELECT setting_key, setting_value FROM app_settings
-     WHERE setting_key IN ('shop_open_hour', 'shop_last_booking_hour')`
-  )
-  const map = Object.fromEntries(result.rows.map((r) => [r.setting_key, Number(r.setting_value)]))
-  const openHour = Number.isInteger(map.shop_open_hour) && map.shop_open_hour >= 1 && map.shop_open_hour <= 20
-    ? map.shop_open_hour
+const { getShopSettings } = require('./shopSettings')
+
+async function getShopHours(pool, shopId) {
+  const map = await getShopSettings(pool, shopId, ['shop_open_hour', 'shop_last_booking_hour'])
+  const openHour = Number.isInteger(Number(map.shop_open_hour)) && Number(map.shop_open_hour) >= 1 && Number(map.shop_open_hour) <= 20
+    ? Number(map.shop_open_hour)
     : 9
-  const lastRaw = map.shop_last_booking_hour
+  const lastRaw = Number(map.shop_last_booking_hour)
   const lastBookingHour = Number.isInteger(lastRaw) && lastRaw >= openHour + 2 && lastRaw <= 22
     ? lastRaw
     : Math.max(openHour + 2, 18)
@@ -17,15 +15,15 @@ async function getShopHours(pool) {
   }
 }
 
-async function getExtraHoursForDate(poolOrClient, date) {
+async function getExtraHoursForDate(poolOrClient, shopId, date) {
   const result = await poolOrClient.query(
     `
       SELECT id, extra_date, start_hour, end_hour, note
       FROM booking_extra_hours
-      WHERE extra_date = $1
+      WHERE shop_id = $1 AND extra_date = $2
       ORDER BY start_hour ASC
     `,
-    [date]
+    [shopId, date]
   )
   return result.rows
 }
@@ -40,12 +38,12 @@ function isWithinNormalHours(startHour, openHour, lastBookingHour) {
   return startHour >= openHour && startHour <= lastBookingHour
 }
 
-async function validateBookingStartHour(poolOrClient, bookingDate, startHour, duration = 2) {
-  const { openHour, lastBookingHour } = await getShopHours(poolOrClient)
+async function validateBookingStartHour(poolOrClient, shopId, bookingDate, startHour, duration = 2) {
+  const { openHour, lastBookingHour } = await getShopHours(poolOrClient, shopId)
   if (isWithinNormalHours(startHour, openHour, lastBookingHour)) {
     return null
   }
-  const extras = await getExtraHoursForDate(poolOrClient, bookingDate)
+  const extras = await getExtraHoursForDate(poolOrClient, shopId, bookingDate)
   if (isWithinExtraWindow(startHour, duration, extras)) {
     return null
   }

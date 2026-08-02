@@ -192,34 +192,154 @@ async function ensureSchema() {
     ON CONFLICT (setting_key) DO NOTHING
   `)
 
+  // ── Multi-shop (tenant) schema ─────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shops (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_admins (
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (shop_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_settings (
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      setting_key TEXT NOT NULL,
+      setting_value TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (shop_id, setting_key)
+    );
+  `)
+
+  await pool.query(`
+    INSERT INTO shops (slug, name)
+    VALUES ('default', 'Nail Thuean')
+    ON CONFLICT (slug) DO NOTHING
+  `)
+
+  const defaultShopRow = await pool.query(`SELECT id FROM shops WHERE slug = 'default' LIMIT 1`)
+  const defaultShopId = defaultShopRow.rows[0]?.id
+  if (!defaultShopId) throw new Error('Default shop missing after migration')
+
+  const tenantTables = [
+    'bookings',
+    'booking_blocks',
+    'booking_extra_hours',
+    'nailoption',
+    'showcase_clips',
+    'service_locations',
+  ]
+  for (const table of tenantTables) {
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS shop_id UUID REFERENCES shops(id)`)
+    await pool.query(
+      `UPDATE ${table} SET shop_id = $1 WHERE shop_id IS NULL`,
+      [defaultShopId]
+    )
+  }
+
+  await pool.query(`
+    INSERT INTO shop_settings (shop_id, setting_key, setting_value)
+    SELECT $1, setting_key, setting_value
+    FROM app_settings
+    ON CONFLICT (shop_id, setting_key) DO NOTHING
+  `, [defaultShopId])
+
+  await pool.query(`
+    INSERT INTO shop_settings (shop_id, setting_key, setting_value)
+    SELECT s.id, d.setting_key, d.setting_value
+    FROM shops s
+    CROSS JOIN (VALUES
+      ('deposit_amount', '300'),
+      ('shop_open_hour', '9'),
+      ('shop_last_booking_hour', '18'),
+      ('book_advance_days', '30'),
+      ('booking_display_mode', 'normal'),
+      ('unpaid_auto_cancel_enabled', 'true'),
+      ('unpaid_expire_hours', '24'),
+      ('coupon_discount_percent', '20'),
+      ('coupon_required_points', '100'),
+      ('line_push_enabled', 'false')
+    ) AS d(setting_key, setting_value)
+    ON CONFLICT (shop_id, setting_key) DO NOTHING
+  `)
+
+  for (const table of tenantTables) {
+    await pool.query(`ALTER TABLE ${table} ALTER COLUMN shop_id SET NOT NULL`)
+  }
+
+  await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_date_hour`)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_shop_date_hour
+      ON bookings (shop_id, booking_date, start_hour)
+      WHERE status != 'cancelled'
+  `)
+
+  await pool.query(`ALTER TABLE service_locations DROP CONSTRAINT IF EXISTS service_locations_name_key`)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_service_locations_shop_name
+      ON service_locations (shop_id, name)
+  `)
+
+  await pool.query(`DROP INDEX IF EXISTS ux_showcase_clips_video_id`)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_showcase_clips_shop_video_id
+      ON showcase_clips (shop_id, video_id)
+  `)
+
+  // Backfill shop_admins: all global admins can manage every shop
+  await pool.query(`
+    INSERT INTO shop_admins (shop_id, user_id)
+    SELECT s.id, u.id
+    FROM shops s
+    CROSS JOIN users u
+    WHERE u.is_admin = true
+    ON CONFLICT DO NOTHING
+  `)
+
+  const { ensureUiSettings } = require('../utils/shopUiSettings')
+  const allShops = await pool.query(`SELECT id FROM shops`)
+  for (const row of allShops.rows) {
+    await ensureUiSettings(pool, row.id)
+  }
+
   const { computeBookUntilDate, todayYmdBangkok } = require('../utils/bookingWindow')
   const advanceRow = await pool.query(
-    `SELECT setting_value FROM app_settings WHERE setting_key = 'book_advance_days'`
+    `SELECT setting_value FROM shop_settings
+     WHERE shop_id = $1 AND setting_key = 'book_advance_days'`,
+    [defaultShopId]
   )
   const untilRow = await pool.query(
-    `SELECT setting_value FROM app_settings WHERE setting_key = 'book_until_date'`
+    `SELECT setting_value FROM shop_settings
+     WHERE shop_id = $1 AND setting_key = 'book_until_date'`,
+    [defaultShopId]
   )
   const advanceDays = Number(advanceRow.rows[0]?.setting_value || 30)
   const untilDate = untilRow.rows[0]?.setting_value
   if (!untilDate) {
     const bookUntil = computeBookUntilDate(advanceDays, todayYmdBangkok())
     await pool.query(
-      `INSERT INTO app_settings (setting_key, setting_value)
-       VALUES ('book_until_date', $1)
-       ON CONFLICT (setting_key) DO NOTHING`,
-      [bookUntil]
+      `INSERT INTO shop_settings (shop_id, setting_key, setting_value)
+       VALUES ($1, 'book_until_date', $2)
+       ON CONFLICT (shop_id, setting_key) DO NOTHING`,
+      [defaultShopId, bookUntil]
     )
   }
 
-  const seed = await pool.query(`SELECT COUNT(*)::int AS n FROM nailoption`)
+  const seed = await pool.query(`SELECT COUNT(*)::int AS n FROM nailoption WHERE shop_id = $1`, [defaultShopId])
   if (seed.rows[0].n === 0) {
     await pool.query(`
-      INSERT INTO nailoption (option_name, description, price, duration_min, is_active)
+      INSERT INTO nailoption (shop_id, option_name, description, price, duration_min, is_active)
       VALUES
-        ('ทาสีเจลมือ', 'เจลพื้นฐาน 1 สี', 299, 60, true),
-        ('ต่อเล็บเจล', 'ต่อเล็บเจลเต็มชุด', 799, 120, true),
-        ('สปามือ', 'สปามือ + บำรุง', 399, 45, true)
-    `)
+        ($1, 'ทาสีเจลมือ', 'เจลพื้นฐาน 1 สี', 299, 60, true),
+        ($1, 'ต่อเล็บเจล', 'ต่อเล็บเจลเต็มชุด', 799, 120, true),
+        ($1, 'สปามือ', 'สปามือ + บำรุง', 399, 45, true)
+    `, [defaultShopId])
   }
 
   console.log('✅ PostgreSQL schema ready')

@@ -1,13 +1,14 @@
+const { getShopSettings } = require('./shopSettings')
+
 const DEFAULT_HOURS = 24
 const MIN_HOURS = 1
 const MAX_HOURS = 168
 
-async function getUnpaidExpireSettings(poolOrClient) {
-  const result = await poolOrClient.query(
-    `SELECT setting_key, setting_value FROM app_settings
-     WHERE setting_key IN ('unpaid_auto_cancel_enabled', 'unpaid_expire_hours')`
-  )
-  const map = Object.fromEntries(result.rows.map((r) => [r.setting_key, r.setting_value]))
+async function getUnpaidExpireSettings(poolOrClient, shopId) {
+  const map = await getShopSettings(poolOrClient, shopId, [
+    'unpaid_auto_cancel_enabled',
+    'unpaid_expire_hours',
+  ])
   const enabled = map.unpaid_auto_cancel_enabled !== 'false'
   let hours = Number(map.unpaid_expire_hours)
   if (!Number.isFinite(hours) || hours < MIN_HOURS) hours = DEFAULT_HOURS
@@ -28,20 +29,29 @@ function isBookingExpired(createdAt, expireHours, enabled) {
   return Date.now() >= expiresAt.getTime()
 }
 
-async function expireUnpaidBookings(poolOrClient) {
-  const { enabled, expireHours } = await getUnpaidExpireSettings(poolOrClient)
-  if (!enabled) return 0
+async function expireUnpaidBookings(poolOrClient, shopId = null) {
+  if (shopId) {
+    const { enabled, expireHours } = await getUnpaidExpireSettings(poolOrClient, shopId)
+    if (!enabled) return 0
+    const result = await poolOrClient.query(
+      `
+        UPDATE bookings
+        SET status = 'cancelled'
+        WHERE shop_id = $1
+          AND status = 'awaiting_payment'
+          AND created_at < NOW() - ($2::int * INTERVAL '1 hour')
+      `,
+      [shopId, expireHours]
+    )
+    return result.rowCount || 0
+  }
 
-  const result = await poolOrClient.query(
-    `
-      UPDATE bookings
-      SET status = 'cancelled'
-      WHERE status = 'awaiting_payment'
-        AND created_at < NOW() - ($1::int * INTERVAL '1 hour')
-    `,
-    [expireHours]
-  )
-  return result.rowCount || 0
+  const shops = await poolOrClient.query(`SELECT id FROM shops WHERE is_active = true`)
+  let total = 0
+  for (const row of shops.rows) {
+    total += await expireUnpaidBookings(poolOrClient, row.id)
+  }
+  return total
 }
 
 module.exports = {

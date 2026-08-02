@@ -24,10 +24,14 @@ app.use(cors({
   },
   credentials: true,
 }))
+
+app.use('/api/line/webhook', require('./routes/lineWebhook'))
+
 app.use(express.json())
 app.use(passport.initialize())
 
 app.use('/api/auth',     require('./routes/auth'))
+app.use('/api/shops',    require('./routes/shops'))
 app.use('/api/bookings', require('./routes/bookings'))
 app.use('/api/admin',    require('./routes/admin'))
 app.use('/api/coupons',  require('./routes/coupons'))

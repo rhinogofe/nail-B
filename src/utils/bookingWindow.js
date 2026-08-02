@@ -1,3 +1,5 @@
+const { getShopSettings, setShopSetting } = require('./shopSettings')
+
 const BANGKOK_TZ = 'Asia/Bangkok'
 
 function todayYmdBangkok() {
@@ -22,16 +24,13 @@ function computeBookUntilDate(advanceDays, fromYmd = todayYmdBangkok()) {
   return addDaysToYmd(fromYmd, days - 1)
 }
 
-async function getAdvanceSettings(pool) {
-  const result = await pool.query(
-    `SELECT setting_key, setting_value FROM app_settings
-     WHERE setting_key IN ('book_advance_days', 'book_until_date')`
-  )
-  const map = Object.fromEntries(result.rows.map((row) => [row.setting_key, row.setting_value]))
+async function getAdvanceSettings(pool, shopId) {
+  const map = await getShopSettings(pool, shopId, ['book_advance_days', 'book_until_date'])
   const advanceDays = Number(map.book_advance_days || 30)
   let bookUntilDate = map.book_until_date || null
   if (!bookUntilDate || !/^\d{4}-\d{2}-\d{2}$/.test(bookUntilDate)) {
     bookUntilDate = computeBookUntilDate(advanceDays)
+    await setShopSetting(pool, shopId, 'book_until_date', bookUntilDate)
   }
   return { advanceDays, bookUntilDate }
 }

@@ -26,9 +26,17 @@ function requireProvider(provider) {
   }
 }
 
-function redirectWithToken(res, user) {
+function redirectWithToken(res, user, shopSlug = 'default') {
   const token = signToken(user)
-  res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${token}`)
+  const base = String(process.env.FRONTEND_URL || 'http://localhost:5173').split(',')[0].trim()
+  const slug = String(shopSlug || 'default').trim().toLowerCase() || 'default'
+  res.redirect(`${base}/${slug}/auth/callback?token=${token}`)
+}
+
+function pickShopSlug(req) {
+  const raw = req.query?.state || req.query?.shop || ''
+  const slug = String(raw).trim().toLowerCase()
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ? slug : 'default'
 }
 
 function normalizePhone(phone) {
@@ -82,8 +90,8 @@ router.get('/google',
 )
 router.get('/google/callback',
   requireProvider('google'),
-  passport.authenticate('google', { failureRedirect: `${process.env.FRONTEND_URL}/login`, session: false }),
-  (req, res) => redirectWithToken(res, req.user)
+  passport.authenticate('google', { failureRedirect: `${String(process.env.FRONTEND_URL || '').split(',')[0].trim()}/default/login`, session: false }),
+  (req, res) => redirectWithToken(res, req.user, pickShopSlug(req))
 )
 
 router.get('/facebook',
@@ -92,8 +100,8 @@ router.get('/facebook',
 )
 router.get('/facebook/callback',
   requireProvider('facebook'),
-  passport.authenticate('facebook', { failureRedirect: `${process.env.FRONTEND_URL}/login`, session: false }),
-  (req, res) => redirectWithToken(res, req.user)
+  passport.authenticate('facebook', { failureRedirect: `${String(process.env.FRONTEND_URL || '').split(',')[0].trim()}/default/login`, session: false }),
+  (req, res) => redirectWithToken(res, req.user, pickShopSlug(req))
 )
 
 router.get('/line',
@@ -102,8 +110,8 @@ router.get('/line',
 )
 router.get('/line/callback',
   requireProvider('line'),
-  passport.authenticate('line', { failureRedirect: `${process.env.FRONTEND_URL}/login`, session: false }),
-  (req, res) => redirectWithToken(res, req.user)
+  passport.authenticate('line', { failureRedirect: `${String(process.env.FRONTEND_URL || '').split(',')[0].trim()}/default/login`, session: false }),
+  (req, res) => redirectWithToken(res, req.user, pickShopSlug(req))
 )
 
 router.get('/me', auth, async (req, res) => {

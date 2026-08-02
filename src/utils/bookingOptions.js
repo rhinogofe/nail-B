@@ -24,27 +24,29 @@ async function syncBookingOptions(db, bookingId, optionIds) {
   )
 }
 
-async function validateOptionIds(db, optionIds, bookingDate) {
+async function validateOptionIds(db, shopId, optionIds, bookingDate) {
   if (!optionIds.length) return true
-  const placeholders = optionIds.map((_, idx) => `$${idx + 1}`).join(', ')
-  const dateParam = bookingDate ? optionIds.length + 1 : null
+  const placeholders = optionIds.map((_, idx) => `$${idx + 2}`).join(', ')
+  const dateParam = bookingDate ? optionIds.length + 2 : null
   const dateFilter = bookingDate ? optionDateFilter(bookingDate, dateParam) : ''
-  const params = bookingDate ? [...optionIds, bookingDate] : optionIds
+  const params = bookingDate ? [shopId, ...optionIds, bookingDate] : [shopId, ...optionIds]
   const result = await db.query(
-    `SELECT id FROM nailoption WHERE is_active = true AND id IN (${placeholders}) ${dateFilter}`,
+    `SELECT id FROM nailoption
+     WHERE shop_id = $1 AND is_active = true AND id IN (${placeholders}) ${dateFilter}`,
     params
   )
   return result.rows.length === optionIds.length
 }
 
-async function validateRequiredOptions(db, optionIds, bookingDate) {
-  const params = bookingDate ? [bookingDate] : []
-  const dateFilter = bookingDate ? optionDateFilter(bookingDate, 1) : ''
+async function validateRequiredOptions(db, shopId, optionIds, bookingDate) {
+  const params = bookingDate ? [shopId, bookingDate] : [shopId]
+  const dateFilter = bookingDate ? optionDateFilter(bookingDate, 2) : ''
   const result = await db.query(
     `
       SELECT id, option_name
       FROM nailoption
-      WHERE is_active = true
+      WHERE shop_id = $1
+        AND is_active = true
         AND is_required = true
         ${dateFilter}
     `,

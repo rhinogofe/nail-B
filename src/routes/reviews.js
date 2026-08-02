@@ -1,10 +1,13 @@
 const router = require('express').Router()
 const auth = require('../middleware/authMiddleware')
+const resolveShop = require('../middleware/resolveShop')
 const { getPool } = require('../db/pool')
 const { fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
+router.use(resolveShop)
 
 async function downloadThumbnailImage(thumbnailUrl, source) {
   return fetch(thumbnailUrl, {
@@ -73,8 +76,9 @@ router.get('/clips/:id/thumbnail', (req, res, next) => {
   try {
     const pool = getPool()
     const result = await pool.query(
-      `SELECT id, source, tiktok_url, thumbnail_url FROM showcase_clips WHERE id = $1`,
-      [req.params.id]
+      `SELECT id, source, tiktok_url, thumbnail_url FROM showcase_clips
+       WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, req.shop.id]
     )
     if (!result.rows.length) {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
@@ -102,9 +106,10 @@ router.get('/clips', auth, async (req, res) => {
       `
         SELECT id, source, tiktok_url, video_id, title, thumbnail_url, sort_order, created_at
         FROM showcase_clips
-        WHERE is_active = true
+        WHERE shop_id = $1 AND is_active = true
         ORDER BY sort_order ASC, created_at DESC
-      `
+      `,
+      [req.shop.id]
     )
     const clips = await enrichClipThumbnails(pool, result.rows)
     res.json(clips)

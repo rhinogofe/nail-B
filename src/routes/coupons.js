@@ -1,10 +1,11 @@
 const crypto = require('crypto')
 const router = require('express').Router()
 const auth = require('../middleware/authMiddleware')
+const resolveShop = require('../middleware/resolveShop')
 const { getPool, withTransaction } = require('../db/pool')
+const { getCouponSettings } = require('../utils/couponSettings')
 
-const REQUIRED_POINTS = 100
-const DISCOUNT_PERCENT = 20
+router.use(resolveShop)
 
 function generateCouponCode(length = 10) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -28,6 +29,19 @@ async function generateUniqueCode(client) {
   throw new Error('ไม่สามารถสร้างคูปองได้ กรุณาลองใหม่')
 }
 
+router.get('/settings', async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getCouponSettings(pool, req.shop.id)
+    res.json({
+      discount_percent: settings.discountPercent,
+      required_points: settings.requiredPoints,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/my', auth, async (req, res) => {
   try {
     const pool = getPool()
@@ -48,6 +62,9 @@ router.get('/my', auth, async (req, res) => {
 
 router.post('/redeem', auth, async (req, res) => {
   try {
+    const pool = getPool()
+    const { discountPercent, requiredPoints } = await getCouponSettings(pool, req.shop.id)
+
     const coupon = await withTransaction(async (client) => {
       const foundUser = await client.query(
         `SELECT id, total_points FROM users WHERE id = $1 FOR UPDATE`,
@@ -61,8 +78,8 @@ router.post('/redeem', auth, async (req, res) => {
         throw err
       }
 
-      if (Number(user.total_points) < REQUIRED_POINTS) {
-        const err = new Error('แต้มไม่พอสำหรับแลกคูปอง')
+      if (Number(user.total_points) < requiredPoints) {
+        const err = new Error(`แต้มไม่พอสำหรับแลกคูปอง (ต้องใช้ ${requiredPoints} แต้ม)`)
         err.status = 400
         throw err
       }
@@ -71,7 +88,7 @@ router.post('/redeem', auth, async (req, res) => {
 
       await client.query(
         `UPDATE users SET total_points = total_points - $1 WHERE id = $2`,
-        [REQUIRED_POINTS, req.user.id]
+        [requiredPoints, req.user.id]
       )
 
       const created = await client.query(
@@ -80,7 +97,7 @@ router.post('/redeem', auth, async (req, res) => {
           VALUES ($1, $2, $3, $4)
           RETURNING id, coupon_code, discount_percent, required_points, created_at
         `,
-        [req.user.id, code, DISCOUNT_PERCENT, REQUIRED_POINTS]
+        [req.user.id, code, discountPercent, requiredPoints]
       )
 
       return created.rows[0]
