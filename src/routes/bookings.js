@@ -10,6 +10,7 @@ const {
 } = require('../utils/bookingOptions')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { getShopHours, validateBookingStartHour } = require('../utils/bookingHours')
+const { getBookingSlotHours, bookingEndHour } = require('../utils/bookingSlotHours')
 const { getUiSettings } = require('../utils/shopUiSettings')
 const { getShopSetting } = require('../utils/shopSettings')
 const {
@@ -34,7 +35,11 @@ router.get('/shop-hours', auth, async (req, res) => {
   try {
     const pool = getPool()
     const hours = await getShopHours(pool, req.shop.id)
-    res.json({ open_hour: hours.openHour, last_booking_hour: hours.lastBookingHour })
+    res.json({
+      open_hour: hours.openHour,
+      last_booking_hour: hours.lastBookingHour,
+      slot_hours: hours.slotHours,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -228,7 +233,8 @@ router.post('/', auth, async (req, res) => {
     const dateError = validateBookingDateRange(booking_date, bookUntilDate)
     if (dateError) return res.status(400).json({ error: dateError })
 
-    const hourError = await validateBookingStartHour(pool, shopId, booking_date, start_hour)
+    const slotHours = await getBookingSlotHours(pool, shopId)
+    const hourError = await validateBookingStartHour(pool, shopId, booking_date, start_hour, slotHours)
     if (hourError) return res.status(400).json({ error: hourError })
 
     const uniqueOptionIds = [...new Set(option_ids.map(String))]
@@ -242,6 +248,7 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ error: requiredError })
     }
 
+    const endHour = bookingEndHour(start_hour, slotHours)
     const overlap = await pool.query(
       `
         SELECT id
@@ -250,10 +257,10 @@ router.post('/', auth, async (req, res) => {
           AND booking_date = $2
           AND status != 'cancelled'
           AND start_hour < $4
-          AND COALESCE(end_hour, start_hour + 2) > $3
+          AND COALESCE(end_hour, start_hour + $5) > $3
         LIMIT 1
       `,
-      [shopId, booking_date, start_hour, start_hour + 2]
+      [shopId, booking_date, start_hour, endHour, slotHours]
     )
 
     if (overlap.rows.length > 0) {
@@ -272,7 +279,7 @@ router.post('/', auth, async (req, res) => {
           )
         LIMIT 1
       `,
-      [shopId, booking_date, start_hour, start_hour + 2]
+      [shopId, booking_date, start_hour, endHour]
     )
 
     if (blocked.rows.length > 0) {
@@ -285,7 +292,7 @@ router.post('/', auth, async (req, res) => {
         VALUES ($1, $2, $3, $4, $5, 'awaiting_payment')
         RETURNING id, booking_date, start_hour, end_hour, status
       `,
-      [shopId, req.user.id, booking_date, start_hour, start_hour + 2]
+      [shopId, req.user.id, booking_date, start_hour, endHour]
     )
     await syncBookingOptions(pool, result.rows[0].id, uniqueOptionIds)
     const bookingId = result.rows[0].id

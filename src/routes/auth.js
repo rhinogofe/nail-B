@@ -3,6 +3,7 @@ const passport = require('passport')
 const { signToken } = require('../config/passport')
 const auth     = require('../middleware/authMiddleware')
 const { getPool } = require('../db/pool')
+const { getAdminShopInfo } = require('../utils/shopAdmins')
 
 const providerEnv = {
   google: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_CALLBACK_URL'],
@@ -141,7 +142,18 @@ router.get('/me', auth, async (req, res) => {
     )
 
     if (!result.rows[0]) return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
-    res.json(result.rows[0])
+    const user = result.rows[0]
+    if (user.is_admin) {
+      const adminInfo = await getAdminShopInfo(pool, user.id)
+      res.json({ ...user, ...adminInfo })
+      return
+    }
+    res.json({
+      ...user,
+      is_super_admin: false,
+      admin_shop_slug: null,
+      managed_shop_slugs: [],
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

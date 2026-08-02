@@ -27,6 +27,34 @@ function resolveChannelAccessToken(shopToken) {
   return String(shopToken || '').trim()
 }
 
+/** Channel secret ≈ 32 hex chars; access token is much longer */
+function validateLineAccessToken(token) {
+  const t = String(token || '').trim()
+  if (!t) return { ok: false, reason: 'missing' }
+  if (/^[a-f0-9]{32}$/i.test(t)) {
+    return { ok: false, reason: 'looks_like_channel_secret' }
+  }
+  if (t.length < 80) {
+    return { ok: false, reason: 'too_short' }
+  }
+  return { ok: true }
+}
+
+function logLineBotTokenStatus() {
+  const token = process.env.LINE_BOT_CHANNEL_ACCESS_TOKEN
+  const check = validateLineAccessToken(token)
+  if (!check.ok) {
+    const hints = {
+      missing: 'ยังไม่ได้ตั้ง — เพิ่ม LINE_BOT_CHANNEL_ACCESS_TOKEN บน Render',
+      looks_like_channel_secret: 'ใส่ Channel secret แทน Access Token — ไป Issue ใหม่ที่ Messaging API',
+      too_short: 'Token สั้นเกินไป — ต้องเป็น Channel access token จากปุ่ม Issue',
+    }
+    console.warn(`⚠️ LINE push: ${hints[check.reason] || check.reason}`)
+    return
+  }
+  console.log(`✅ LINE bot token OK (${maskToken(token)})`)
+}
+
 async function getLinePushSettings(poolOrClient, shopId, { includeToken = false } = {}) {
   const map = await getShopSettings(poolOrClient, shopId, SETTING_KEYS)
   const shopToken = map.line_channel_access_token || ''
@@ -69,4 +97,6 @@ module.exports = {
   getLinePushSettings,
   setLinePushSettings,
   resolveChannelAccessToken,
+  validateLineAccessToken,
+  logLineBotTokenStatus,
 }

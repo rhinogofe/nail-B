@@ -264,7 +264,8 @@ async function ensureSchema() {
       ('unpaid_expire_hours', '24'),
       ('coupon_discount_percent', '20'),
       ('coupon_required_points', '100'),
-      ('line_push_enabled', 'false')
+      ('line_push_enabled', 'false'),
+      ('booking_slot_hours', '2')
     ) AS d(setting_key, setting_value)
     ON CONFLICT (shop_id, setting_key) DO NOTHING
   `)
@@ -292,13 +293,24 @@ async function ensureSchema() {
       ON showcase_clips (shop_id, video_id)
   `)
 
-  // Backfill shop_admins: all global admins can manage every shop
+  // Legacy backfill: admins linked to every shop → keep only default (super admin)
+  await pool.query(`
+    DELETE FROM shop_admins sa
+    USING shop_admins sa_default, shops s_default
+    WHERE sa_default.user_id = sa.user_id
+      AND sa_default.shop_id = s_default.id
+      AND s_default.slug = 'default'
+      AND sa.shop_id != sa_default.shop_id
+  `)
+
+  // New admins without shop assignment → default shop (super admin)
   await pool.query(`
     INSERT INTO shop_admins (shop_id, user_id)
     SELECT s.id, u.id
     FROM shops s
     CROSS JOIN users u
-    WHERE u.is_admin = true
+    WHERE s.slug = 'default' AND u.is_admin = true
+      AND NOT EXISTS (SELECT 1 FROM shop_admins sa WHERE sa.user_id = u.id)
     ON CONFLICT DO NOTHING
   `)
 

@@ -1,3 +1,4 @@
+const { getBookingSlotHours, bookingEndHour } = require('./bookingSlotHours')
 const { getLinePushSettings, DEFAULT_TEMPLATE } = require('./linePushSettings')
 const { pushLineMessage } = require('./linePush')
 
@@ -60,7 +61,8 @@ async function loadBookingNotifyContext(poolOrClient, shopId, bookingId) {
     [bookingId]
   )
   const services = optionsRes.rows.map((r) => r.option_name).join(', ') || '-'
-  const endHour = row.end_hour ?? Number(row.start_hour) + 2
+  const slotHours = await getBookingSlotHours(poolOrClient, shopId)
+  const endHour = row.end_hour ?? bookingEndHour(row.start_hour, slotHours)
   const customer = row.customer_name
     || row.customer_phone
     || row.customer_email

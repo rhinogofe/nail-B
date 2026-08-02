@@ -6,6 +6,7 @@ const { passport } = require('./config/passport')
 const { ensureSchema } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
+const { logLineBotTokenStatus } = require('./utils/linePushSettings')
 
 const app = express()
 
@@ -55,6 +56,7 @@ async function startServer() {
 
   app.listen(PORT, () => {
     console.log(`🚀 Server running at http://localhost:${PORT}`)
+    logLineBotTokenStatus()
   })
 
   setInterval(async () => {

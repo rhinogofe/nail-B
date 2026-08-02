@@ -5,6 +5,7 @@ const { getPool } = require('../db/pool')
 const { ensureShopSettings } = require('../utils/shopSettings')
 const { ensureUiSettings } = require('../utils/shopUiSettings')
 const { computeBookUntilDate, todayYmdBangkok } = require('../utils/bookingWindow')
+const { isSuperAdmin } = require('../utils/shopAdmins')
 
 const DEFAULT_SETTINGS = {
   deposit_amount: '300',
@@ -15,18 +16,24 @@ const DEFAULT_SETTINGS = {
   unpaid_auto_cancel_enabled: 'true',
   unpaid_expire_hours: '24',
   line_push_enabled: 'false',
+  booking_slot_hours: '2',
   coupon_discount_percent: '20',
   coupon_required_points: '100',
 }
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
-function requireDefaultShop(req, res, next) {
-  const slug = String(req.headers['x-shop-slug'] || '').trim().toLowerCase()
-  if (slug !== 'default') {
-    return res.status(403).json({ error: 'เฉพาะร้าน default เท่านั้นที่จัดการสาขาได้' })
+async function requireSuperAdminUser(req, res, next) {
+  try {
+    const pool = getPool()
+    const ok = await isSuperAdmin(pool, req.user.id)
+    if (!ok) {
+      return res.status(403).json({ error: 'เฉพาะแอดมินหลัก (default) เท่านั้นที่จัดการสาขาได้' })
+    }
+    next()
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
-  next()
 }
 
 router.get('/', async (req, res) => {
@@ -63,7 +70,7 @@ router.get('/:slug', async (req, res) => {
   }
 })
 
-router.post('/', auth, admin, requireDefaultShop, async (req, res) => {
+router.post('/', auth, admin, requireSuperAdminUser, async (req, res) => {
   const name = String(req.body?.name || '').trim()
   const slug = String(req.body?.slug || '').trim().toLowerCase()
 
@@ -102,7 +109,7 @@ router.post('/', auth, admin, requireDefaultShop, async (req, res) => {
   }
 })
 
-router.patch('/:slug', auth, admin, requireDefaultShop, async (req, res) => {
+router.patch('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => {
   const name = req.body?.name != null ? String(req.body.name).trim() : null
   const isActive = req.body?.is_active
 
@@ -136,6 +143,47 @@ router.patch('/:slug', auth, admin, requireDefaultShop, async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบร้าน' })
     }
     res.json({ success: true, shop: result.rows[0] })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => {
+  const slug = req.params.slug.toLowerCase()
+  if (slug === 'default') {
+    return res.status(400).json({ error: 'ไม่สามารถลบร้าน default ได้' })
+  }
+
+  try {
+    const pool = getPool()
+    const existing = await pool.query(
+      `SELECT id, slug, name, is_active FROM shops WHERE slug = $1 LIMIT 1`,
+      [slug]
+    )
+    if (!existing.rows[0]) {
+      return res.status(404).json({ error: 'ไม่พบร้าน' })
+    }
+
+    const bookingCount = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM bookings WHERE shop_id = $1`,
+      [existing.rows[0].id]
+    )
+    if (bookingCount.rows[0]?.count > 0) {
+      const result = await pool.query(
+        `UPDATE shops SET is_active = false WHERE slug = $1
+         RETURNING id, slug, name, is_active, created_at`,
+        [slug]
+      )
+      return res.json({
+        success: true,
+        soft_deleted: true,
+        message: 'ร้านมีข้อมูลการจอง — ปิดใช้งานแทนการลบถาวร',
+        shop: result.rows[0],
+      })
+    }
+
+    await pool.query(`DELETE FROM shops WHERE slug = $1`, [slug])
+    res.json({ success: true, soft_deleted: false, slug })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

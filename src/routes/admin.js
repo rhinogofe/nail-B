@@ -1,6 +1,7 @@
 const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
+const shopAdminAccess = require('../middleware/shopAdminAccessMiddleware')
 const resolveShop = require('../middleware/resolveShop')
 const { getPool, withTransaction } = require('../db/pool')
 const { getShopSetting, getShopSettings, setShopSetting, setShopSettings } = require('../utils/shopSettings')
@@ -13,6 +14,13 @@ const {
 } = require('../utils/bookingOptions')
 const { resolveShowcaseClip, fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
 const { validateBookingStartHour, getShopHours } = require('../utils/bookingHours')
+const {
+  getBookingSlotHours,
+  bookingEndHour,
+  normalizeBookingSlotHours,
+  MIN_SLOT_HOURS,
+  MAX_SLOT_HOURS,
+} = require('../utils/bookingSlotHours')
 const { getUiSettings, setUiSettings } = require('../utils/shopUiSettings')
 const { getCouponSettings, setCouponSettings } = require('../utils/couponSettings')
 const { getLinePushSettings, setLinePushSettings, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
@@ -24,25 +32,31 @@ const {
   MIN_HOURS,
   MAX_HOURS,
 } = require('../utils/unpaidExpire')
+const {
+  syncShopAdminAssignment,
+  attachAdminShopFields,
+} = require('../utils/shopAdmins')
 
 router.use(resolveShop)
+router.use(auth)
+router.use(admin)
+router.use(shopAdminAccess)
 
-router.get('/shops', auth, admin, async (req, res) => {
+router.get('/shops', async (req, res) => {
   try {
     const pool = getPool()
-    if (req.shop.slug === 'default') {
+    if (req.isSuperAdmin) {
       const result = await pool.query(
         `SELECT id, slug, name, is_active, created_at
          FROM shops
-         WHERE is_active = true
-         ORDER BY name ASC`
+         ORDER BY is_active DESC, name ASC`
       )
       return res.json(result.rows)
     }
     const result = await pool.query(
       `SELECT id, slug, name, is_active, created_at
        FROM shops
-       WHERE id = $1 AND is_active = true
+       WHERE id = $1
        LIMIT 1`,
       [req.shop.id]
     )
@@ -64,7 +78,9 @@ function normalizePhone(phone) {
 }
 
 async function assertSlotAvailable(client, shopId, bookingDate, startHour, excludeId = null) {
-  const params = [shopId, bookingDate, startHour, startHour + 2]
+  const slotHours = await getBookingSlotHours(client, shopId)
+  const endHour = bookingEndHour(startHour, slotHours)
+  const params = [shopId, bookingDate, startHour, endHour, slotHours]
   let excludeClause = ''
   if (excludeId) {
     params.push(excludeId)
@@ -79,7 +95,7 @@ async function assertSlotAvailable(client, shopId, bookingDate, startHour, exclu
         AND status != 'cancelled'
         ${excludeClause}
         AND start_hour < $4
-        AND COALESCE(end_hour, start_hour + 2) > $3
+        AND COALESCE(end_hour, start_hour + $5) > $3
       LIMIT 1
     `,
     params
@@ -92,6 +108,8 @@ async function assertSlotAvailable(client, shopId, bookingDate, startHour, exclu
 }
 
 async function assertSlotNotBlocked(client, shopId, bookingDate, startHour) {
+  const slotHours = await getBookingSlotHours(client, shopId)
+  const endHour = bookingEndHour(startHour, slotHours)
   const blocked = await client.query(
     `
       SELECT id
@@ -104,7 +122,7 @@ async function assertSlotNotBlocked(client, shopId, bookingDate, startHour) {
         )
       LIMIT 1
     `,
-    [shopId, bookingDate, startHour, startHour + 2]
+    [shopId, bookingDate, startHour, endHour]
   )
   if (blocked.rows.length > 0) {
     const err = new Error('ช่วงเวลานี้ร้านปิดรับคิว')
@@ -164,7 +182,7 @@ function buildDateRange(startDate, dayCount) {
   return dates
 }
 
-router.get('/bookings', auth, admin, async (req, res) => {
+router.get('/bookings', async (req, res) => {
   const { date, status } = req.query
   const shopId = req.shop.id
   try {
@@ -238,7 +256,7 @@ router.get('/bookings', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
+router.get('/bookings/calendar-summary', async (req, res) => {
   const { month } = req.query
   if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
     return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
@@ -290,7 +308,7 @@ router.get('/bookings/calendar-summary', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/revenue/summary', auth, admin, async (req, res) => {
+router.get('/revenue/summary', async (req, res) => {
   const { month } = req.query
   if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
     return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
@@ -347,7 +365,7 @@ router.get('/revenue/summary', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/bookings', auth, admin, async (req, res) => {
+router.post('/bookings', async (req, res) => {
   const { user_id, booking_date, start_hour, nailoption_ids, status: reqStatus, total } = req.body
   if (!user_id || !booking_date || start_hour == null) {
     return res.status(400).json({ error: 'ต้องระบุ user_id, booking_date และ start_hour' })
@@ -378,7 +396,7 @@ router.post('/bookings', auth, admin, async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
-    const hourError = await validateBookingStartHour(pool, shopId, booking_date, startHourNum)
+    const hourError = await validateBookingStartHour(pool, shopId, booking_date, startHourNum, await getBookingSlotHours(pool, shopId))
     if (hourError) {
       return res.status(400).json({ error: hourError })
     }
@@ -411,7 +429,8 @@ router.post('/bookings', auth, admin, async (req, res) => {
 
       await assertSlotAvailable(client, shopId, booking_date, startHourNum)
 
-      const endHour = startHourNum + 2
+      const slotHours = await getBookingSlotHours(client, shopId)
+      const endHour = bookingEndHour(startHourNum, slotHours)
       const completedAt = status === 'done' ? new Date() : null
       const bookingTotal = totalProvided ? totalNum : null
 
@@ -456,7 +475,7 @@ router.post('/bookings', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
+router.patch('/bookings/:id/restore', async (req, res) => {
   const targetStatus = req.body?.status === 'pending' ? 'pending' : 'awaiting_payment'
   const shopId = req.shop.id
 
@@ -500,7 +519,7 @@ router.patch('/bookings/:id/restore', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
+router.patch('/bookings/:id/cancel-unpaid', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -525,7 +544,7 @@ router.patch('/bookings/:id/cancel-unpaid', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id/cancel-paid', auth, admin, async (req, res) => {
+router.patch('/bookings/:id/cancel-paid', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -553,7 +572,7 @@ router.patch('/bookings/:id/cancel-paid', auth, admin, async (req, res) => {
   }
 })
 
-router.delete('/bookings/:id', auth, admin, async (req, res) => {
+router.delete('/bookings/:id', async (req, res) => {
   const shopId = req.shop.id
   try {
     await withTransaction(async (client) => {
@@ -589,7 +608,7 @@ router.delete('/bookings/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/blocks', auth, admin, async (req, res) => {
+router.get('/blocks', async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7)
   const [y, m] = month.split('-').map(Number)
   if (!y || !m) return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
@@ -617,7 +636,7 @@ router.get('/blocks', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/blocks', auth, admin, async (req, res) => {
+router.post('/blocks', async (req, res) => {
   const { block_date, is_full_day, start_hour, end_hour, note } = req.body
   if (!block_date) return res.status(400).json({ error: 'ต้องระบุ block_date' })
   if (!is_full_day) {
@@ -653,7 +672,7 @@ router.post('/blocks', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/blocks/bulk', auth, admin, async (req, res) => {
+router.post('/blocks/bulk', async (req, res) => {
   const { start_date, days, is_full_day, start_hour, end_hour, note } = req.body
   const dayCount = Number(days)
 
@@ -736,7 +755,7 @@ router.post('/blocks/bulk', auth, admin, async (req, res) => {
   }
 })
 
-router.delete('/blocks/:id', auth, admin, async (req, res) => {
+router.delete('/blocks/:id', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -754,7 +773,7 @@ router.delete('/blocks/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/extra-hours', auth, admin, async (req, res) => {
+router.get('/extra-hours', async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7)
   const [y, m] = month.split('-').map(Number)
   if (!y || !m) return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
@@ -782,7 +801,7 @@ router.get('/extra-hours', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/extra-hours', auth, admin, async (req, res) => {
+router.post('/extra-hours', async (req, res) => {
   const { extra_date, start_hour, end_hour, note } = req.body
   if (!extra_date) return res.status(400).json({ error: 'ต้องระบุ extra_date' })
   if (start_hour == null || end_hour == null) {
@@ -791,13 +810,16 @@ router.post('/extra-hours', auth, admin, async (req, res) => {
   if (start_hour < 0 || end_hour > 24 || end_hour <= start_hour) {
     return res.status(400).json({ error: 'ช่วงเวลาเปิดเพิ่มไม่ถูกต้อง' })
   }
-  if (end_hour - start_hour < 2) {
-    return res.status(400).json({ error: 'ช่วงเปิดเพิ่มต้องยาวอย่างน้อย 2 ชั่วโมง (สำหรับคิว 2 ชม.)' })
-  }
 
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const slotHours = await getBookingSlotHours(pool, shopId)
+    if (end_hour - start_hour < slotHours) {
+      return res.status(400).json({
+        error: `ช่วงเปิดเพิ่มต้องยาวอย่างน้อย ${slotHours} ชั่วโมง (ตามความยาวคิว)`,
+      })
+    }
     const result = await pool.query(
       `
         INSERT INTO booking_extra_hours (shop_id, extra_date, start_hour, end_hour, note)
@@ -812,7 +834,7 @@ router.post('/extra-hours', auth, admin, async (req, res) => {
   }
 })
 
-router.delete('/extra-hours/:id', auth, admin, async (req, res) => {
+router.delete('/extra-hours/:id', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -830,7 +852,7 @@ router.delete('/extra-hours/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/deposit', auth, admin, async (req, res) => {
+router.get('/settings/deposit', async (req, res) => {
   try {
     const pool = getPool()
     const value = await getShopSetting(pool, req.shop.id, 'deposit_amount')
@@ -840,7 +862,7 @@ router.get('/settings/deposit', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/deposit', auth, admin, async (req, res) => {
+router.patch('/settings/deposit', async (req, res) => {
   const amount = Number(req.body?.deposit_amount)
   if (!Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ error: 'deposit_amount ต้องมากกว่า 0' })
@@ -855,7 +877,7 @@ router.patch('/settings/deposit', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/coupon', auth, admin, async (req, res) => {
+router.get('/settings/coupon', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await getCouponSettings(pool, req.shop.id)
@@ -868,7 +890,7 @@ router.get('/settings/coupon', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/coupon', auth, admin, async (req, res) => {
+router.patch('/settings/coupon', async (req, res) => {
   const discountPercent = Number(req.body?.discount_percent)
   const requiredPoints = Number(req.body?.required_points)
   if (!Number.isInteger(discountPercent) || discountPercent < 1 || discountPercent > 100) {
@@ -890,7 +912,7 @@ router.patch('/settings/coupon', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/line-push', auth, admin, async (req, res) => {
+router.get('/settings/line-push', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await getLinePushSettings(pool, req.shop.id)
@@ -908,7 +930,7 @@ router.get('/settings/line-push', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/line-push', auth, admin, async (req, res) => {
+router.patch('/settings/line-push', async (req, res) => {
   try {
     const pool = getPool()
     const partial = {}
@@ -933,7 +955,7 @@ router.patch('/settings/line-push', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/settings/line-push/test', auth, admin, async (req, res) => {
+router.post('/settings/line-push/test', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -964,7 +986,7 @@ router.post('/settings/line-push/test', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
+router.get('/settings/unpaid-auto-cancel', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await getUnpaidExpireSettings(pool, req.shop.id)
@@ -977,7 +999,7 @@ router.get('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
+router.patch('/settings/unpaid-auto-cancel', async (req, res) => {
   const enabled = req.body?.enabled !== false && req.body?.enabled !== 'false'
   const hours = Number(req.body?.expire_hours)
   if (!Number.isInteger(hours) || hours < MIN_HOURS || hours > MAX_HOURS) {
@@ -998,28 +1020,33 @@ router.patch('/settings/unpaid-auto-cancel', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/shop-hours', auth, admin, async (req, res) => {
+router.get('/settings/shop-hours', async (req, res) => {
   try {
     const pool = getPool()
     const hours = await getShopHours(pool, req.shop.id)
     res.json({
       open_hour: hours.openHour,
       last_booking_hour: hours.lastBookingHour,
+      slot_hours: hours.slotHours,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
+router.patch('/settings/shop-hours', async (req, res) => {
   const open = Number(req.body?.open_hour)
   const last = Number(req.body?.last_booking_hour)
   if (!Number.isInteger(open) || open < 1 || open > 20)
     return res.status(400).json({ error: 'open_hour ต้องอยู่ระหว่าง 1-20' })
-  if (!Number.isInteger(last) || last < open + 2 || last > 22)
-    return res.status(400).json({ error: 'last_booking_hour ต้องมากกว่า open_hour อย่างน้อย 2 และไม่เกิน 22' })
   try {
     const pool = getPool()
+    const slotHours = await getBookingSlotHours(pool, req.shop.id)
+    if (!Number.isInteger(last) || last < open + slotHours || last > 22) {
+      return res.status(400).json({
+        error: `last_booking_hour ต้องมากกว่า open_hour อย่างน้อย ${slotHours} และไม่เกิน 22`,
+      })
+    }
     await setShopSettings(pool, req.shop.id, {
       shop_open_hour: String(open),
       shop_last_booking_hour: String(last),
@@ -1030,7 +1057,7 @@ router.patch('/settings/shop-hours', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/advance-days', auth, admin, async (req, res) => {
+router.get('/settings/advance-days', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await getAdvanceSettings(pool, req.shop.id)
@@ -1043,7 +1070,7 @@ router.get('/settings/advance-days', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/advance-days', auth, admin, async (req, res) => {
+router.patch('/settings/advance-days', async (req, res) => {
   const days = Number(req.body?.advance_days)
   if (!Number.isInteger(days) || days < 1 || days > 365)
     return res.status(400).json({ error: 'advance_days ต้องอยู่ระหว่าง 1-365' })
@@ -1060,7 +1087,7 @@ router.patch('/settings/advance-days', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/booking-display', auth, admin, async (req, res) => {
+router.get('/settings/booking-display', async (req, res) => {
   try {
     const pool = getPool()
     const value = await getShopSetting(pool, req.shop.id, 'booking_display_mode')
@@ -1071,7 +1098,7 @@ router.get('/settings/booking-display', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/booking-display', auth, admin, async (req, res) => {
+router.patch('/settings/booking-display', async (req, res) => {
   const mode = req.body?.display_mode === 'slots_2h' ? 'slots_2h' : 'normal'
   try {
     const pool = getPool()
@@ -1082,7 +1109,28 @@ router.patch('/settings/booking-display', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/settings/ui', auth, admin, async (req, res) => {
+router.get('/settings/booking-slot-hours', async (req, res) => {
+  try {
+    const pool = getPool()
+    const slotHours = await getBookingSlotHours(pool, req.shop.id)
+    res.json({ slot_hours: slotHours })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/booking-slot-hours', async (req, res) => {
+  const slotHours = normalizeBookingSlotHours(req.body?.slot_hours)
+  try {
+    const pool = getPool()
+    await setShopSetting(pool, req.shop.id, 'booking_slot_hours', String(slotHours))
+    res.json({ success: true, slot_hours: slotHours })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/ui', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await getUiSettings(pool, req.shop.id)
@@ -1092,7 +1140,7 @@ router.get('/settings/ui', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/settings/ui', auth, admin, async (req, res) => {
+router.patch('/settings/ui', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await setUiSettings(pool, req.shop.id, req.body || {})
@@ -1102,7 +1150,7 @@ router.patch('/settings/ui', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/coupons/use', auth, admin, async (req, res) => {
+router.patch('/coupons/use', async (req, res) => {
   const couponCode = String(req.body?.coupon_code || '').trim().toUpperCase()
   if (!couponCode) {
     return res.status(400).json({ error: 'กรุณาระบุรหัสคูปอง' })
@@ -1131,7 +1179,7 @@ router.patch('/coupons/use', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
+router.patch('/bookings/:id/confirm-payment', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -1176,7 +1224,7 @@ router.patch('/bookings/:id/confirm-payment', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id/revert-payment', auth, admin, async (req, res) => {
+router.patch('/bookings/:id/revert-payment', async (req, res) => {
   try {
     const shopId = req.shop.id
     const result = await getPool().query(
@@ -1205,7 +1253,7 @@ router.patch('/bookings/:id/revert-payment', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
+router.patch('/bookings/:id/complete', async (req, res) => {
   const total = Number(req.body?.total)
   if (!Number.isFinite(total) || total < 0) {
     return res.status(400).json({ error: 'กรุณาระบุยอดเงินที่ถูกต้อง' })
@@ -1248,7 +1296,7 @@ router.patch('/bookings/:id/complete', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/bookings/:id', auth, admin, async (req, res) => {
+router.patch('/bookings/:id', async (req, res) => {
   if (!('total' in req.body)) {
     return res.status(400).json({ error: 'กรุณาระบุยอดเงิน' })
   }
@@ -1320,8 +1368,16 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         }
       }
 
+      const slotHours = await getBookingSlotHours(client, shopId)
+
       if (hasStartHour || hasBookingDate) {
-        const hourError = await validateBookingStartHour(client, shopId, effectiveDate, effectiveStartHour)
+        const hourError = await validateBookingStartHour(
+          client,
+          shopId,
+          effectiveDate,
+          effectiveStartHour,
+          slotHours
+        )
         if (hourError) {
           throw { status: 400, message: hourError }
         }
@@ -1352,11 +1408,11 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
         params.push(startHourNum)
         paramIdx += 1
         updates.push(`end_hour = $${paramIdx}`)
-        params.push(startHourNum + 2)
+        params.push(bookingEndHour(startHourNum, slotHours))
         paramIdx += 1
       } else if (hasBookingDate) {
         updates.push(`end_hour = $${paramIdx}`)
-        params.push(effectiveStartHour + 2)
+        params.push(bookingEndHour(effectiveStartHour, slotHours))
         paramIdx += 1
       }
 
@@ -1410,7 +1466,7 @@ router.patch('/bookings/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/users', auth, admin, async (req, res) => {
+router.get('/users', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -1421,7 +1477,21 @@ router.get('/users', auth, admin, async (req, res) => {
         u.is_admin, u.total_points, u.created_at,
         COUNT(b.id)::int AS total_bookings,
         SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
-        SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings
+        SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings,
+        (
+          SELECT bool_or(s.slug = 'default')
+          FROM shop_admins sa
+          JOIN shops s ON s.id = sa.shop_id
+          WHERE sa.user_id = u.id
+        ) AS is_super_admin,
+        (
+          SELECT s.slug
+          FROM shop_admins sa
+          JOIN shops s ON s.id = sa.shop_id
+          WHERE sa.user_id = u.id
+          ORDER BY CASE WHEN s.slug = 'default' THEN 0 ELSE 1 END, s.slug
+          LIMIT 1
+        ) AS admin_shop_slug
       FROM users u
       LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
       GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
@@ -1429,13 +1499,17 @@ router.get('/users', auth, admin, async (req, res) => {
     `,
       [shopId]
     )
-    res.json(result.rows)
+    res.json(result.rows.map((row) => ({
+      ...row,
+      is_super_admin: Boolean(row.is_super_admin),
+      admin_shop_slug: row.is_admin ? (row.admin_shop_slug || null) : null,
+    })))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-router.get('/users/:id/bookings', auth, admin, async (req, res) => {
+router.get('/users/:id/bookings', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -1498,21 +1572,33 @@ router.get('/users/:id/bookings', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/users/:id/set-admin', auth, admin, async (req, res) => {
-  const { is_admin } = req.body
+router.patch('/users/:id/set-admin', async (req, res) => {
+  const { is_admin, admin_shop_slug } = req.body
   if (req.params.id === req.user.id && !is_admin) {
     return res.status(400).json({ error: 'ไม่สามารถถอดสิทธิ์แอดมินของตัวเองได้' })
   }
+  if (Boolean(is_admin) && !req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่ให้สิทธิ์แอดมินได้' })
+  }
+  const slug = String(admin_shop_slug || 'default').trim().toLowerCase()
+  if (Boolean(is_admin) && slug === 'default' && !req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่ตั้งแอดมินทุกสาขาได้' })
+  }
   try {
-    const pool = getPool()
-    await pool.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
-    res.json({ success: true })
+    await withTransaction(async (client) => {
+      await client.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
+      await syncShopAdminAssignment(client, req.params.id, {
+        isAdmin: Boolean(is_admin),
+        adminShopSlug: slug,
+      })
+    })
+    res.json({ success: true, admin_shop_slug: Boolean(is_admin) ? slug : null })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(err.status || 500).json({ error: err.message })
   }
 })
 
-router.patch('/users/:id', auth, admin, async (req, res) => {
+router.patch('/users/:id', async (req, res) => {
   const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key)
   const fields = []
   const params = []
@@ -1554,8 +1640,18 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
     fields.push(`is_admin = $${params.length}`)
   }
 
-  if (!fields.length && !has('login_id')) {
+  if (!fields.length && !has('login_id') && !has('admin_shop_slug')) {
     return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
+  }
+
+  if (has('admin_shop_slug') || (has('is_admin') && req.body.is_admin)) {
+    const slug = String(req.body.admin_shop_slug || 'default').trim().toLowerCase()
+    if (slug === 'default' && !req.isSuperAdmin) {
+      return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่ตั้งแอดมินทุกสาขาได้' })
+    }
+    if ((has('admin_shop_slug') || req.body.is_admin) && !req.isSuperAdmin) {
+      return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่จัดการสิทธิ์แอดมินได้' })
+    }
   }
 
   try {
@@ -1593,7 +1689,44 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
     }
 
     if (!fields.length) {
-      return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
+      if (!has('admin_shop_slug')) {
+        return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
+      }
+      const current = await pool.query(`SELECT is_admin FROM users WHERE id = $1`, [req.params.id])
+      if (!current.rows[0]?.is_admin) {
+        return res.status(400).json({ error: 'ผู้ใช้นี้ยังไม่ใช่แอดมิน' })
+      }
+      await syncShopAdminAssignment(pool, req.params.id, {
+        isAdmin: true,
+        adminShopSlug: req.body.admin_shop_slug || 'default',
+      })
+      const shopId = req.shop.id
+      const stats = await pool.query(
+        `
+          SELECT
+            COUNT(*)::int AS total_bookings,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
+            SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings
+          FROM bookings
+          WHERE user_id = $1 AND shop_id = $2
+        `,
+        [req.params.id, shopId]
+      )
+      const fullUser = await pool.query(
+        `SELECT id, name, email, avatar_url, provider, provider_id, admin_note, is_admin, total_points, created_at
+         FROM users WHERE id = $1`,
+        [req.params.id]
+      )
+      const enriched = await attachAdminShopFields(pool, fullUser.rows[0])
+      return res.json({
+        success: true,
+        user: {
+          ...enriched,
+          total_bookings: stats.rows[0]?.total_bookings || 0,
+          completed_bookings: stats.rows[0]?.completed_bookings || 0,
+          cancelled_bookings: stats.rows[0]?.cancelled_bookings || 0,
+        },
+      })
     }
 
     params.push(req.params.id)
@@ -1612,6 +1745,19 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
     }
 
+    const userId = req.params.id
+    if (has('is_admin') || has('admin_shop_slug')) {
+      const adminFlag = has('is_admin') ? Boolean(req.body.is_admin) : result.rows[0].is_admin
+      if (adminFlag) {
+        await syncShopAdminAssignment(pool, userId, {
+          isAdmin: true,
+          adminShopSlug: req.body.admin_shop_slug || 'default',
+        })
+      } else if (has('is_admin')) {
+        await pool.query(`DELETE FROM shop_admins WHERE user_id = $1`, [userId])
+      }
+    }
+
     const user = result.rows[0]
     const shopId = req.shop.id
     const stats = await pool.query(
@@ -1626,10 +1772,12 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
       [user.id, shopId]
     )
 
+    const enriched = await attachAdminShopFields(pool, user)
+
     res.json({
       success: true,
       user: {
-        ...user,
+        ...enriched,
         total_bookings: stats.rows[0]?.total_bookings || 0,
         completed_bookings: stats.rows[0]?.completed_bookings || 0,
         cancelled_bookings: stats.rows[0]?.cancelled_bookings || 0,
@@ -1640,7 +1788,7 @@ router.patch('/users/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.delete('/users/:id', auth, admin, async (req, res) => {
+router.delete('/users/:id', async (req, res) => {
   const userId = req.params.id
   if (userId === req.user.id) {
     return res.status(400).json({ error: 'ไม่สามารถลบบัญชีของตัวเองได้' })
@@ -1709,7 +1857,7 @@ function parseOptionalColor(value) {
   return color
 }
 
-router.get('/nailoptions', auth, admin, async (req, res) => {
+router.get('/nailoptions', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -1729,7 +1877,7 @@ router.get('/nailoptions', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/nailoptions', auth, admin, async (req, res) => {
+router.post('/nailoptions', async (req, res) => {
   const option_name = String(req.body?.option_name || '').trim()
   const description = String(req.body?.description || '').trim() || null
   const price = Number(req.body?.price)
@@ -1779,7 +1927,7 @@ router.post('/nailoptions', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
+router.patch('/nailoptions/:id', async (req, res) => {
   const option_name = String(req.body?.option_name || '').trim()
   const description = String(req.body?.description || '').trim() || null
   const price = Number(req.body?.price)
@@ -1837,7 +1985,7 @@ router.patch('/nailoptions/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
+router.patch('/nailoptions/:id/move', async (req, res) => {
   const direction = req.body?.direction === 'down' ? 'down' : 'up'
   const scopeDate = req.body?.date
   const scopeEveryDay = req.body?.scope === 'everyday'
@@ -1918,7 +2066,7 @@ router.patch('/nailoptions/:id/move', auth, admin, async (req, res) => {
   }
 })
 
-router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
+router.delete('/nailoptions/:id', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -1968,7 +2116,7 @@ router.delete('/nailoptions/:id', auth, admin, async (req, res) => {
 
 // ─── Service locations (ปุ่มลัดเพิ่มสถานที่) ─────────────────
 
-router.get('/service-locations', auth, admin, async (req, res) => {
+router.get('/service-locations', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -1987,7 +2135,7 @@ router.get('/service-locations', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/service-locations', auth, admin, async (req, res) => {
+router.post('/service-locations', async (req, res) => {
   const name = String(req.body?.name || '').trim()
   const description = String(req.body?.description || '').trim() || null
   const colorParsed = parseOptionalColor(req.body?.color || '#3b82f6')
@@ -2017,7 +2165,7 @@ router.post('/service-locations', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/service-locations/:id', auth, admin, async (req, res) => {
+router.patch('/service-locations/:id', async (req, res) => {
   const name = String(req.body?.name || '').trim()
   const description = String(req.body?.description || '').trim() || null
   const colorParsed = parseOptionalColor(req.body?.color)
@@ -2057,7 +2205,7 @@ router.patch('/service-locations/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.delete('/service-locations/:id', auth, admin, async (req, res) => {
+router.delete('/service-locations/:id', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -2074,7 +2222,7 @@ router.delete('/service-locations/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.get('/showcase-clips', auth, admin, async (req, res) => {
+router.get('/showcase-clips', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -2093,7 +2241,7 @@ router.get('/showcase-clips', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/showcase-clips', auth, admin, async (req, res) => {
+router.post('/showcase-clips', async (req, res) => {
   const mediaUrl = String(req.body?.tiktok_url || req.body?.clip_url || '').trim()
   const title = String(req.body?.title || '').trim() || null
   const is_active = req.body?.is_active !== false
@@ -2138,7 +2286,7 @@ router.post('/showcase-clips', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
+router.patch('/showcase-clips/:id', async (req, res) => {
   const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key)
   if (!has('tiktok_url') && !has('clip_url') && !has('title') && !has('is_active') && !has('sort_order')) {
     return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
@@ -2214,7 +2362,7 @@ router.patch('/showcase-clips/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, res) => {
+router.post('/showcase-clips/:id/refresh-thumbnail', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -2248,7 +2396,7 @@ router.post('/showcase-clips/:id/refresh-thumbnail', auth, admin, async (req, re
   }
 })
 
-router.delete('/showcase-clips/:id', auth, admin, async (req, res) => {
+router.delete('/showcase-clips/:id', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
@@ -2265,7 +2413,7 @@ router.delete('/showcase-clips/:id', auth, admin, async (req, res) => {
   }
 })
 
-router.patch('/showcase-clips/:id/move', auth, admin, async (req, res) => {
+router.patch('/showcase-clips/:id/move', async (req, res) => {
   const direction = req.body?.direction === 'down' ? 'down' : 'up'
 
   try {
