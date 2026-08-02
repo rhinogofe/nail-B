@@ -36,6 +36,7 @@ const {
   syncShopAdminAssignment,
   attachAdminShopFields,
 } = require('../utils/shopAdmins')
+const { requireChatUserAccess, normalizeChatBody } = require('../utils/chatAccess')
 
 router.use(resolveShop)
 router.use(auth)
@@ -1470,6 +1471,8 @@ router.get('/users', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const showAllUsers = req.shop.slug === 'default'
+    const bookingJoin = showAllUsers ? 'LEFT' : 'INNER'
     const result = await pool.query(
       `
       SELECT
@@ -1493,7 +1496,7 @@ router.get('/users', async (req, res) => {
           LIMIT 1
         ) AS admin_shop_slug
       FROM users u
-      LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
+      ${bookingJoin} JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
       GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
       ORDER BY u.is_admin DESC, u.total_points DESC
     `,
@@ -1519,6 +1522,16 @@ router.get('/users/:id/bookings', async (req, res) => {
     )
     if (!userRes.rows[0]) {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
+    }
+
+    if (req.shop.slug !== 'default') {
+      const scoped = await pool.query(
+        `SELECT 1 FROM bookings WHERE user_id = $1 AND shop_id = $2 LIMIT 1`,
+        [req.params.id, shopId]
+      )
+      if (!scoped.rows.length) {
+        return res.status(404).json({ error: 'ไม่พบผู้ใช้ในสาขานี้' })
+      }
     }
 
     const bookingsRes = await pool.query(
@@ -2456,6 +2469,164 @@ router.patch('/showcase-clips/:id/move', async (req, res) => {
     })
 
     res.json({ success: true, message: 'จัดลำดับแล้ว' })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/chat/conversations', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const branchScoped = req.shop.slug !== 'default'
+    const scopeFilter = branchScoped
+      ? `AND (
+          EXISTS (SELECT 1 FROM bookings b WHERE b.shop_id = $1 AND b.user_id = cm.user_id)
+          OR EXISTS (SELECT 1 FROM chat_messages cx WHERE cx.shop_id = $1 AND cx.user_id = cm.user_id)
+        )`
+      : ''
+
+    const result = await pool.query(
+      `
+        SELECT
+          u.id,
+          u.name,
+          u.email,
+          u.avatar_url,
+          last.body AS last_message,
+          last.sender_role AS last_sender_role,
+          last.created_at AS last_message_at,
+          COALESCE(unread.count, 0)::int AS unread_count
+        FROM (
+          SELECT DISTINCT ON (user_id)
+            user_id, body, sender_role, created_at
+          FROM chat_messages cm
+          WHERE shop_id = $1
+          ${scopeFilter}
+          ORDER BY user_id, created_at DESC
+        ) last
+        JOIN users u ON u.id = last.user_id
+        LEFT JOIN (
+          SELECT user_id, COUNT(*)::int AS count
+          FROM chat_messages
+          WHERE shop_id = $1 AND sender_role = 'customer' AND read_at IS NULL
+          GROUP BY user_id
+        ) unread ON unread.user_id = u.id
+        ORDER BY last.created_at DESC
+      `,
+      [shopId]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/chat/unread-count', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const branchScoped = req.shop.slug !== 'default'
+    const params = [shopId]
+    let joinBookings = ''
+    if (branchScoped) {
+      joinBookings = `
+        AND EXISTS (
+          SELECT 1 FROM bookings b
+          WHERE b.shop_id = $1 AND b.user_id = cm.user_id
+        )
+      `
+    }
+
+    const result = await pool.query(
+      `
+        SELECT COUNT(*)::int AS count
+        FROM chat_messages cm
+        WHERE cm.shop_id = $1
+          AND cm.sender_role = 'customer'
+          AND cm.read_at IS NULL
+          ${joinBookings}
+      `,
+      params
+    )
+    res.json({ count: result.rows[0]?.count || 0 })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/chat/conversations/:userId/messages', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const userId = req.params.userId
+
+    await requireChatUserAccess(pool, req.shop, userId)
+
+    const userRes = await pool.query(
+      `SELECT id, name, email, avatar_url FROM users WHERE id = $1`,
+      [userId]
+    )
+    if (!userRes.rows[0]) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
+    }
+
+    const messagesRes = await pool.query(
+      `
+        SELECT id, body, sender_role, sender_id, read_at, created_at
+        FROM chat_messages
+        WHERE shop_id = $1 AND user_id = $2
+        ORDER BY created_at ASC
+        LIMIT 500
+      `,
+      [shopId, userId]
+    )
+
+    await pool.query(
+      `
+        UPDATE chat_messages
+        SET read_at = NOW()
+        WHERE shop_id = $1 AND user_id = $2 AND sender_role = 'customer' AND read_at IS NULL
+      `,
+      [shopId, userId]
+    )
+
+    res.json({
+      user: userRes.rows[0],
+      messages: messagesRes.rows,
+    })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/chat/conversations/:userId/messages', async (req, res) => {
+  const body = normalizeChatBody(req.body?.body)
+  if (!body) return res.status(400).json({ error: 'กรุณาพิมพ์ข้อความ' })
+
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const userId = req.params.userId
+
+    await requireChatUserAccess(pool, req.shop, userId)
+
+    const userRes = await pool.query(`SELECT id FROM users WHERE id = $1`, [userId])
+    if (!userRes.rows[0]) {
+      return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
+    }
+
+    const result = await pool.query(
+      `
+        INSERT INTO chat_messages (shop_id, user_id, sender_role, sender_id, body)
+        VALUES ($1, $2, 'admin', $3, $4)
+        RETURNING id, body, sender_role, sender_id, read_at, created_at
+      `,
+      [shopId, userId, req.user.id, body]
+    )
+    res.status(201).json(result.rows[0])
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })

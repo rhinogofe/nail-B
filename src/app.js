@@ -37,6 +37,7 @@ app.use('/api/bookings', require('./routes/bookings'))
 app.use('/api/admin',    require('./routes/admin'))
 app.use('/api/coupons',  require('./routes/coupons'))
 app.use('/api/reviews',  require('./routes/reviews'))
+app.use('/api/chat',     require('./routes/chat'))
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }))
 

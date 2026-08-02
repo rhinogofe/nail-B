@@ -186,14 +186,6 @@ async function ensureSchema() {
   `)
 
   await pool.query(`
-    INSERT INTO service_locations (name, color, description, sort_order)
-    VALUES
-      ('จุฬา', '#3b82f6', 'สถานที่ให้บริการ จุฬา', 1),
-      ('เกษตร', '#22c55e', 'สถานที่ให้บริการ เกษตร', 2)
-    ON CONFLICT (name) DO NOTHING
-  `)
-
-  await pool.query(`
     INSERT INTO app_settings (setting_key, setting_value)
     VALUES
       ('deposit_amount',         '300'),
@@ -229,6 +221,24 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (shop_id, setting_key)
     );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sender_role TEXT NOT NULL CHECK (sender_role IN ('admin', 'customer')),
+      sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      read_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS ix_chat_messages_shop_user_created
+      ON chat_messages (shop_id, user_id, created_at ASC);
+
+    CREATE INDEX IF NOT EXISTS ix_chat_messages_unread_customer
+      ON chat_messages (shop_id, user_id)
+      WHERE sender_role = 'customer' AND read_at IS NULL;
   `)
 
   await pool.query(`
@@ -256,6 +266,19 @@ async function ensureSchema() {
       [defaultShopId]
     )
   }
+
+  await pool.query(`
+    INSERT INTO service_locations (shop_id, name, color, description, sort_order)
+    SELECT $1, v.name, v.color, v.description, v.sort_order
+    FROM (VALUES
+      ('จุฬา', '#3b82f6', 'สถานที่ให้บริการ จุฬา', 1),
+      ('เกษตร', '#22c55e', 'สถานที่ให้บริการ เกษตร', 2)
+    ) AS v(name, color, description, sort_order)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM service_locations sl
+      WHERE sl.shop_id = $1 AND sl.name = v.name
+    )
+  `, [defaultShopId])
 
   await pool.query(`
     INSERT INTO shop_settings (shop_id, setting_key, setting_value)
