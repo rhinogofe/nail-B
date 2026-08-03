@@ -4,7 +4,7 @@ const resolveShop = require('../middleware/resolveShop')
 const { getPool } = require('../db/pool')
 const { canManageShop } = require('../utils/shopAdmins')
 const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
-const { readChatImageFile, MIME_EXT } = require('../utils/chatImages')
+const { readChatImageFile, getChatImageCacheMaxAge, MIME_EXT } = require('../utils/chatImages')
 
 router.use(resolveShop)
 router.use(auth)
@@ -84,7 +84,7 @@ router.get('/images/:filename', async (req, res) => {
     const ext = filename.split('.').pop()?.toLowerCase()
     const mime = Object.entries(MIME_EXT).find(([, value]) => value === ext)?.[0] || 'image/jpeg'
     res.set('Content-Type', mime)
-    res.set('Cache-Control', 'private, max-age=3600')
+    res.set('Cache-Control', `private, max-age=${getChatImageCacheMaxAge()}`)
     res.send(buffer)
   } catch (err) {
     res.status(500).json({ error: err.message })

@@ -306,8 +306,10 @@ async function ensureSchema() {
       ('unpaid_expire_hours', '24'),
       ('coupon_discount_percent', '20'),
       ('coupon_required_points', '100'),
+      ('coupon_completion_points', '10'),
       ('line_push_enabled', 'false'),
-      ('booking_slot_hours', '2')
+      ('booking_slot_hours', '2'),
+      ('shop_register_pin', '')
     ) AS d(setting_key, setting_value)
     ON CONFLICT (shop_id, setting_key) DO NOTHING
   `)

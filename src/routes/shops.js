@@ -2,24 +2,8 @@ const router = require('express').Router()
 const auth = require('../middleware/authMiddleware')
 const admin = require('../middleware/adminMiddleware')
 const { getPool } = require('../db/pool')
-const { ensureShopSettings } = require('../utils/shopSettings')
-const { ensureUiSettings } = require('../utils/shopUiSettings')
-const { computeBookUntilDate, todayYmdBangkok } = require('../utils/bookingWindow')
 const { isSuperAdmin } = require('../utils/shopAdmins')
-
-const DEFAULT_SETTINGS = {
-  deposit_amount: '300',
-  shop_open_hour: '9',
-  shop_last_booking_hour: '18',
-  book_advance_days: '30',
-  booking_display_mode: 'normal',
-  unpaid_auto_cancel_enabled: 'true',
-  unpaid_expire_hours: '24',
-  line_push_enabled: 'false',
-  booking_slot_hours: '2',
-  coupon_discount_percent: '20',
-  coupon_required_points: '100',
-}
+const { createShopRecord } = require('../utils/createShopRecord')
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -81,25 +65,18 @@ router.post('/', auth, admin, requireSuperAdminUser, async (req, res) => {
 
   try {
     const pool = getPool()
-    const created = await pool.query(
-      `INSERT INTO shops (slug, name) VALUES ($1, $2)
-       RETURNING id, slug, name, is_active, created_at`,
-      [slug, name]
-    )
-    const shop = created.rows[0]
-    await ensureShopSettings(pool, shop.id, {
-      ...DEFAULT_SETTINGS,
-      book_until_date: computeBookUntilDate(30, todayYmdBangkok()),
-    })
-    await ensureUiSettings(pool, shop.id)
-    await pool.query(
-      `INSERT INTO service_locations (shop_id, name, color, description, sort_order)
-       VALUES
-         ($1, 'จุฬา', '#3b82f6', 'สถานที่ให้บริการ จุฬา', 1),
-         ($1, 'เกษตร', '#22c55e', 'สถานที่ให้บริการ เกษตร', 2)
-       ON CONFLICT DO NOTHING`,
-      [shop.id]
-    )
+    const client = await pool.connect()
+    let shop
+    try {
+      await client.query('BEGIN')
+      shop = await createShopRecord(client, { slug, name })
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
     res.status(201).json({ success: true, shop })
   } catch (err) {
     if (err.code === '23505') {

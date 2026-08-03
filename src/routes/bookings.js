@@ -12,6 +12,7 @@ const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { getShopHours, validateBookingStartHour } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour } = require('../utils/bookingSlotHours')
 const { getUiSettings } = require('../utils/shopUiSettings')
+const { readUiImageFile, MIME_EXT, isAllowedKind } = require('../utils/shopUiImages')
 const { getShopSetting } = require('../utils/shopSettings')
 const {
   getUnpaidExpireSettings,
@@ -26,6 +27,27 @@ router.get('/ui-settings', async (req, res) => {
     const pool = getPool()
     const settings = await getUiSettings(pool, req.shop.id)
     res.json(settings)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/ui-images/:kind/:filename', async (req, res) => {
+  try {
+    const kind = String(req.params.kind || '').toLowerCase()
+    const filename = req.params.filename
+    if (!isAllowedKind(kind)) {
+      return res.status(404).json({ error: 'ไม่พบรูป' })
+    }
+
+    const buffer = await readUiImageFile(req.shop.id, kind, filename)
+    if (!buffer) return res.status(404).json({ error: 'ไม่พบรูป' })
+
+    const ext = filename.split('.').pop()?.toLowerCase()
+    const mime = Object.entries(MIME_EXT).find(([, value]) => value === ext)?.[0] || 'application/octet-stream'
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.type(mime)
+    res.send(buffer)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

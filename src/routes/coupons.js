@@ -36,6 +36,7 @@ router.get('/settings', async (req, res) => {
     res.json({
       discount_percent: settings.discountPercent,
       required_points: settings.requiredPoints,
+      completion_points: settings.completionPoints,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })

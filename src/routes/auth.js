@@ -4,6 +4,12 @@ const { signToken } = require('../config/passport')
 const auth     = require('../middleware/authMiddleware')
 const { getPool } = require('../db/pool')
 const { getAdminShopInfo } = require('../utils/shopAdmins')
+const { createShopRecord } = require('../utils/createShopRecord')
+const { UI_KEYS } = require('../utils/shopUiSettings')
+const {
+  isRegisterShopEnabled,
+  verifyRegisterShopPin,
+} = require('../utils/registerShopPin')
 
 const providerEnv = {
   google: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_CALLBACK_URL'],
@@ -93,6 +99,111 @@ router.post('/phone-login', async (req, res) => {
   }
 })
 
+router.get('/register-shop/config', async (req, res) => {
+  try {
+    const pool = getPool()
+    const enabled = await isRegisterShopEnabled(pool)
+    res.json({ enabled })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/verify-register-pin', async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await verifyRegisterShopPin(pool, req.body?.pin)
+    if (!result.ok) {
+      const status = result.error.includes('ยังไม่เปิด') ? 503 : 401
+      return res.status(status).json({ error: result.error })
+    }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/register-shop', auth, async (req, res) => {
+  const slug = String(req.body?.shop_slug || '').trim().toLowerCase()
+  const shopName = String(req.body?.shop_name || '').trim()
+  const ui = req.body?.ui && typeof req.body.ui === 'object' ? req.body.ui : {}
+  const registerPin = req.body?.register_pin
+
+  const optionalEmptyKeys = new Set(['ui_logo_url', 'ui_hero_image_url'])
+  const missing = UI_KEYS.filter((key) => {
+    if (optionalEmptyKeys.has(key)) return false
+    return !String(ui[key] ?? '').trim()
+  })
+  if (!shopName) {
+    return res.status(400).json({ error: 'กรุณาระบุชื่อร้าน' })
+  }
+  if (missing.length) {
+    return res.status(400).json({
+      error: 'กรุณากรอกข้อมูล UI ให้ครบทุกช่อง',
+      fields: missing,
+    })
+  }
+
+  const pool = getPool()
+  const userId = req.user.id
+
+  const pinCheck = await verifyRegisterShopPin(pool, registerPin)
+  if (!pinCheck.ok) {
+    const status = pinCheck.error.includes('ยังไม่เปิด') ? 503 : 401
+    return res.status(status).json({ error: pinCheck.error })
+  }
+
+  try {
+    const existingAdmin = await pool.query(
+      `SELECT 1 FROM shop_admins WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    )
+    if (existingAdmin.rows.length) {
+      return res.status(409).json({ error: 'บัญชีนี้มีร้านแล้ว กรุณาเข้าสู่ระบบแอดมิน' })
+    }
+
+    const client = await pool.connect()
+    let shop
+    try {
+      await client.query('BEGIN')
+      shop = await createShopRecord(client, { slug, name: shopName, uiSettings: ui })
+
+      await client.query(
+        `UPDATE users SET is_admin = true WHERE id = $1`,
+        [userId]
+      )
+      await client.query(
+        `INSERT INTO shop_admins (shop_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [shop.id, userId]
+      )
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+
+    const userRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [userId])
+    const user = userRes.rows[0]
+    const token = signToken(user)
+    const adminInfo = await getAdminShopInfo(pool, userId)
+
+    res.status(201).json({
+      success: true,
+      shop,
+      token,
+      user: { ...user, ...adminInfo },
+    })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'slug นี้ถูกใช้แล้ว กรุณาเลือก slug อื่น' })
+    }
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/google',
   requireProvider('google'),
   passport.authenticate('google', { scope: ['profile', 'email'], session: false })
@@ -151,9 +262,10 @@ router.get('/me', auth, async (req, res) => {
 
     if (!result.rows[0]) return res.status(404).json({ error: 'ไม่พบผู้ใช้' })
     const user = result.rows[0]
+    const token = signToken(user)
     if (user.is_admin) {
       const adminInfo = await getAdminShopInfo(pool, user.id)
-      res.json({ ...user, ...adminInfo })
+      res.json({ ...user, ...adminInfo, token })
       return
     }
     res.json({
@@ -161,6 +273,7 @@ router.get('/me', auth, async (req, res) => {
       is_super_admin: false,
       admin_shop_slug: null,
       managed_shop_slugs: [],
+      token,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })

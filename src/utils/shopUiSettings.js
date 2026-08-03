@@ -38,7 +38,7 @@ const UI_DEFAULTS = {
   ui_cancel_confirm_text: 'ต้องการยกเลิกคิวนี้ใช่ไหม',
   ui_cancel_success_title: 'ยกเลิกสำเร็จ',
   ui_cancel_fail_title: 'ยกเลิกไม่สำเร็จ',
-  ui_points_banner: 'เมื่อช่างทำเสร็จ คุณจะได้รับ +10 แต้ม',
+  ui_points_banner: 'เมื่อช่างทำเสร็จ คุณจะได้รับ <strong>+{points} แต้ม</strong>',
   ui_closed_day_error: 'ช่วงนี้ร้านปิดรับคิวทั้งวัน กรุณาเลือกวันอื่น',
   ui_no_services_today: 'ไม่มีบริการให้เลือกในวันนี้',
   ui_date_nav_hint: 'ลากเลื่อนหรือกด … เพื่อดูวันถัดไป',

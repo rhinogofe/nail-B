@@ -6,6 +6,7 @@ const { passport } = require('./config/passport')
 const { ensureSchema } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
+const { expireOldChatImages } = require('./utils/chatImages')
 const { logLineBotTokenStatus } = require('./utils/linePushSettings')
 
 const app = express()
@@ -69,6 +70,19 @@ async function startServer() {
       console.error('expireUnpaidBookings:', err.message)
     }
   }, 5 * 60 * 1000)
+
+  async function runChatImageCleanup() {
+    try {
+      const pool = getPool()
+      const count = await expireOldChatImages(pool)
+      if (count > 0) console.log(`🖼️ Removed ${count} expired chat image(s)`)
+    } catch (err) {
+      console.error('expireOldChatImages:', err.message)
+    }
+  }
+
+  runChatImageCleanup()
+  setInterval(runChatImageCleanup, 60 * 60 * 1000)
 }
 
 startServer()

@@ -4,6 +4,20 @@ const crypto = require('crypto')
 
 const UPLOAD_ROOT = path.join(__dirname, '../../uploads/chat')
 const MAX_BYTES = 2 * 1024 * 1024
+const DEFAULT_RETENTION_HOURS = 24
+const DEFAULT_CACHE_MAX_AGE_SEC = 86400
+
+function getChatImageRetentionHours() {
+  const hours = Number(process.env.CHAT_IMAGE_RETENTION_HOURS)
+  if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_RETENTION_HOURS
+  return hours
+}
+
+function getChatImageCacheMaxAge() {
+  const seconds = Number(process.env.CHAT_IMAGE_CACHE_MAX_AGE)
+  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_CACHE_MAX_AGE_SEC
+  return Math.floor(seconds)
+}
 const MIME_EXT = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -89,6 +103,36 @@ function formatLastMessagePreview(body, imageUrl) {
   return text
 }
 
+async function expireOldChatImages(pool) {
+  const hours = getChatImageRetentionHours()
+  const result = await pool.query(
+    `
+      SELECT id, shop_id, image_url
+      FROM chat_messages
+      WHERE image_url IS NOT NULL
+        AND created_at < NOW() - ($1::text || ' hours')::interval
+    `,
+    [String(hours)]
+  )
+  if (!result.rows.length) return 0
+
+  await Promise.all(
+    result.rows.map((row) => deleteChatImageFile(row.shop_id, row.image_url))
+  )
+
+  const ids = result.rows.map((row) => row.id)
+  await pool.query(
+    `
+      UPDATE chat_messages
+      SET image_url = NULL
+      WHERE id = ANY($1::uuid[])
+    `,
+    [ids]
+  )
+
+  return result.rows.length
+}
+
 module.exports = {
   parseBase64Image,
   saveChatImage,
@@ -96,5 +140,8 @@ module.exports = {
   deleteChatImagesForConversation,
   readChatImageFile,
   formatLastMessagePreview,
+  expireOldChatImages,
+  getChatImageRetentionHours,
+  getChatImageCacheMaxAge,
   MIME_EXT,
 }

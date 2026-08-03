@@ -22,7 +22,13 @@ const {
   MAX_SLOT_HOURS,
 } = require('../utils/bookingSlotHours')
 const { getUiSettings, setUiSettings } = require('../utils/shopUiSettings')
-const { getCouponSettings, setCouponSettings } = require('../utils/couponSettings')
+const {
+  parseBase64Image,
+  saveUiImage,
+  deleteStoredUiImage,
+  isAllowedKind,
+} = require('../utils/shopUiImages')
+const { getCouponSettings, setCouponSettings, awardCompletionPoints } = require('../utils/couponSettings')
 const { getLinePushSettings, setLinePushSettings, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const {
@@ -39,6 +45,11 @@ const {
 const { requireChatUserAccess } = require('../utils/chatAccess')
 const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
 const { deleteChatImagesForConversation } = require('../utils/chatImages')
+const {
+  getRegisterShopPin,
+  setRegisterShopPin,
+  isValidPin,
+} = require('../utils/registerShopPin')
 
 router.use(resolveShop)
 router.use(auth)
@@ -325,6 +336,12 @@ router.get('/revenue/summary', async (req, res) => {
     const lastDay = new Date(y, m, 0).getDate()
     const to = `${month}-${String(lastDay).padStart(2, '0')}`
 
+    const prevDate = new Date(y, m - 2, 1)
+    const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`
+    const prevLastDay = new Date(prevDate.getFullYear(), prevDate.getMonth() + 1, 0).getDate()
+    const prevFrom = `${prevMonth}-01`
+    const prevTo = `${prevMonth}-${String(prevLastDay).padStart(2, '0')}`
+
     const depositRate = Number(await getShopSetting(pool, shopId, 'deposit_amount')) || 300
 
     const result = await pool.query(
@@ -341,6 +358,17 @@ router.get('/revenue/summary', async (req, res) => {
       [shopId, from, to]
     )
 
+    const prevResult = await pool.query(
+      `
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'done')::int AS done_count,
+          COALESCE(SUM(total) FILTER (WHERE status = 'done' AND total IS NOT NULL), 0)::numeric AS total_amount
+        FROM bookings
+        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3
+      `,
+      [shopId, prevFrom, prevTo]
+    )
+
     const days = result.rows.map((row) => {
       const doneCount = row.done_count
       return {
@@ -355,13 +383,29 @@ router.get('/revenue/summary', async (req, res) => {
     const month_total = days.reduce((sum, row) => sum + row.total_amount, 0)
     const month_done_count = days.reduce((sum, row) => sum + row.done_count, 0)
 
+    const prevRow = prevResult.rows[0] || {}
+    const prev_month_done_count = Number(prevRow.done_count) || 0
+    const prev_month_total = Number(prevRow.total_amount) || 0
+    const prev_month_deposit_total = prev_month_done_count * depositRate
+
+    function pctChange(current, previous) {
+      if (previous === 0) return current === 0 ? 0 : null
+      return ((current - previous) / previous) * 100
+    }
+
     res.json({
       month: String(month),
+      prev_month: prevMonth,
       deposit_rate: depositRate,
       days,
       month_deposit_total,
       month_total,
       month_done_count,
+      prev_month_deposit_total,
+      prev_month_total,
+      prev_month_done_count,
+      deposit_change_pct: pctChange(month_deposit_total, prev_month_deposit_total),
+      total_change_pct: pctChange(month_total, prev_month_total),
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -449,26 +493,24 @@ router.post('/bookings', async (req, res) => {
 
       await syncBookingOptions(client, bookingId, optionIds)
 
+      let awardedPoints = 0
       if (status === 'done') {
-        await client.query(
-          `INSERT INTO point_logs (user_id, booking_id, points) VALUES ($1, $2, 10)`,
-          [user_id, bookingId]
-        )
-        await client.query(
-          `UPDATE users SET total_points = total_points + 10 WHERE id = $1`,
-          [user_id]
-        )
+        awardedPoints = await awardCompletionPoints(client, shopId, user_id, bookingId)
       }
 
-      return fetchAdminBookingWithOptions(client, shopId, bookingId)
+      return { booking: await fetchAdminBookingWithOptions(client, shopId, bookingId), awardedPoints }
     })
 
+    const doneMsg =
+      booking.awardedPoints > 0
+        ? `บันทึกคิวย้อนหลังแล้ว (+${booking.awardedPoints} แต้ม)`
+        : 'บันทึกคิวย้อนหลังแล้ว'
     res.status(201).json({
       success: true,
-      message: status === 'done' ? 'บันทึกคิวย้อนหลังแล้ว (+10 คะแนน)' : 'เพิ่มคิวแล้ว',
-      booking,
+      message: status === 'done' ? doneMsg : 'เพิ่มคิวแล้ว',
+      booking: booking.booking,
     })
-    notifyShopNewBooking(getPool(), shopId, booking.id).catch(() => null)
+    notifyShopNewBooking(getPool(), shopId, booking.booking.id).catch(() => null)
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     if (err.code === '23505') {
@@ -887,6 +929,7 @@ router.get('/settings/coupon', async (req, res) => {
     res.json({
       discount_percent: settings.discountPercent,
       required_points: settings.requiredPoints,
+      completion_points: settings.completionPoints,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -896,19 +939,28 @@ router.get('/settings/coupon', async (req, res) => {
 router.patch('/settings/coupon', async (req, res) => {
   const discountPercent = Number(req.body?.discount_percent)
   const requiredPoints = Number(req.body?.required_points)
+  const completionPoints = Number(req.body?.completion_points)
   if (!Number.isInteger(discountPercent) || discountPercent < 1 || discountPercent > 100) {
     return res.status(400).json({ error: 'discount_percent ต้องอยู่ระหว่าง 1-100' })
   }
   if (!Number.isInteger(requiredPoints) || requiredPoints < 1) {
     return res.status(400).json({ error: 'required_points ต้องมากกว่า 0' })
   }
+  if (!Number.isInteger(completionPoints) || completionPoints < 0) {
+    return res.status(400).json({ error: 'completion_points ต้องเป็นจำนวนเต็มที่ไม่ติดลบ' })
+  }
   try {
     const pool = getPool()
-    const settings = await setCouponSettings(pool, req.shop.id, { discountPercent, requiredPoints })
+    const settings = await setCouponSettings(pool, req.shop.id, {
+      discountPercent,
+      requiredPoints,
+      completionPoints,
+    })
     res.json({
       success: true,
       discount_percent: settings.discountPercent,
       required_points: settings.requiredPoints,
+      completion_points: settings.completionPoints,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -985,6 +1037,33 @@ router.post('/settings/line-push/test', async (req, res) => {
     }
     res.json({ success: true, message: 'ส่งข้อความทดสอบแล้ว' })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/register-pin', async (req, res) => {
+  if (req.shop.slug !== 'default' || !req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลัก (default) เท่านั้น' })
+  }
+  try {
+    const pool = getPool()
+    const pin = await getRegisterShopPin(pool)
+    res.json({ pin, configured: isValidPin(pin) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/register-pin', async (req, res) => {
+  if (req.shop.slug !== 'default' || !req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลัก (default) เท่านั้น' })
+  }
+  try {
+    const pool = getPool()
+    const pin = await setRegisterShopPin(pool, req.body?.pin)
+    res.json({ success: true, pin, configured: true })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
@@ -1153,6 +1232,32 @@ router.patch('/settings/ui', async (req, res) => {
   }
 })
 
+router.post('/settings/ui/upload', async (req, res) => {
+  try {
+    const kind = String(req.body?.kind || '').toLowerCase()
+    if (!isAllowedKind(kind)) {
+      return res.status(400).json({ error: 'ประเภทรูปต้องเป็น logo หรือ hero' })
+    }
+
+    const parsed = parseBase64Image(req.body?.image_data, req.body?.image_mime)
+    if (!parsed) return res.status(400).json({ error: 'ต้องส่งรูปภาพ' })
+    if (parsed.error) return res.status(400).json({ error: parsed.error })
+
+    const pool = getPool()
+    const shopId = req.shop.id
+    const settingKey = kind === 'logo' ? 'ui_logo_url' : 'ui_hero_image_url'
+    const current = await getUiSettings(pool, shopId)
+
+    const saved = await saveUiImage(shopId, kind, parsed.buffer, parsed.ext)
+    await deleteStoredUiImage(shopId, current[settingKey])
+
+    const settings = await setUiSettings(pool, shopId, { [settingKey]: saved.url })
+    res.json({ success: true, kind, url: saved.url, settings })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/coupons/use', async (req, res) => {
   const couponCode = String(req.body?.coupon_code || '').trim().toUpperCase()
   if (!couponCode) {
@@ -1264,7 +1369,7 @@ router.patch('/bookings/:id/complete', async (req, res) => {
 
   try {
     const shopId = req.shop.id
-    await withTransaction(async (client) => {
+    const awardedPoints = await withTransaction(async (client) => {
       const found = await client.query(
         `SELECT * FROM bookings WHERE id = $1 AND shop_id = $2 AND status = 'pending'`,
         [req.params.id, shopId]
@@ -1274,25 +1379,21 @@ router.patch('/bookings/:id/complete', async (req, res) => {
         err.status = 404
         throw err
       }
-      const booking = found.rows[0]
+      const row = found.rows[0]
 
       await client.query(
         `UPDATE bookings SET status = 'done', completed_at = NOW(), total = $3 WHERE id = $1 AND shop_id = $2`,
-        [booking.id, shopId, total]
+        [row.id, shopId, total]
       )
 
-      await client.query(
-        `INSERT INTO point_logs (user_id, booking_id, points) VALUES ($1, $2, 10)`,
-        [booking.user_id, booking.id]
-      )
-
-      await client.query(
-        `UPDATE users SET total_points = total_points + 10 WHERE id = $1`,
-        [booking.user_id]
-      )
+      return awardCompletionPoints(client, shopId, row.user_id, row.id)
     })
 
-    res.json({ success: true, message: 'เสร็จแล้ว! ลูกค้าได้รับ +10 คะแนน' })
+    const msg =
+      awardedPoints > 0
+        ? `เสร็จแล้ว! ลูกค้าได้รับ +${awardedPoints} แต้ม`
+        : 'เสร็จแล้ว!'
+    res.json({ success: true, message: msg, completion_points: awardedPoints })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })

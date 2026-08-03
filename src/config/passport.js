@@ -92,7 +92,7 @@ function signToken(user) {
   return jwt.sign(
     { id: user.id, is_admin: user.is_admin },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    { expiresIn: process.env.JWT_EXPIRES_IN || '365d' }
   )
 }
 
