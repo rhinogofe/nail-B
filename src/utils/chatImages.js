@@ -1,8 +1,11 @@
 const fs = require('fs').promises
 const path = require('path')
 const crypto = require('crypto')
+const { getChatUploadRoot } = require('./uploadPaths')
 
-const UPLOAD_ROOT = path.join(__dirname, '../../uploads/chat')
+function uploadRoot() {
+  return getChatUploadRoot()
+}
 const MAX_BYTES = 2 * 1024 * 1024
 const DEFAULT_RETENTION_HOURS = 24
 const DEFAULT_CACHE_MAX_AGE_SEC = 86400
@@ -51,11 +54,11 @@ function parseBase64Image(imageData, imageMime) {
 function shopImagePath(shopId, filename) {
   const safeName = path.basename(String(filename || ''))
   if (!safeName || safeName !== filename || safeName.includes('..')) return null
-  return path.join(UPLOAD_ROOT, shopId, safeName)
+  return path.join(uploadRoot(), shopId, safeName)
 }
 
 async function saveChatImage(shopId, buffer, ext) {
-  const dir = path.join(UPLOAD_ROOT, shopId)
+  const dir = path.join(uploadRoot(), shopId)
   await fs.mkdir(dir, { recursive: true })
   const filename = `${crypto.randomUUID()}.${ext}`
   await fs.writeFile(path.join(dir, filename), buffer)

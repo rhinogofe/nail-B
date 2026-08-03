@@ -8,6 +8,7 @@ const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 const { expireOldChatImages } = require('./utils/chatImages')
 const { logLineBotTokenStatus } = require('./utils/linePushSettings')
+const { ensureUploadDirs, getUploadRoot } = require('./utils/uploadPaths')
 
 const app = express()
 
@@ -56,8 +57,15 @@ async function startServer() {
     console.error('⚠️ Startup DB migration warning:', err.message)
   }
 
+  try {
+    await ensureUploadDirs()
+  } catch (err) {
+    console.error('⚠️ Upload directory warning:', err.message)
+  }
+
   app.listen(PORT, () => {
     console.log(`🚀 Server running at http://localhost:${PORT}`)
+    console.log(`📁 Upload root: ${getUploadRoot()}`)
     logLineBotTokenStatus()
   })
 

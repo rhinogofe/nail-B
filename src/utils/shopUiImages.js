@@ -1,8 +1,11 @@
 const fs = require('fs').promises
 const path = require('path')
 const crypto = require('crypto')
+const { getUiUploadRoot } = require('./uploadPaths')
 
-const UPLOAD_ROOT = path.join(__dirname, '../../uploads/ui')
+function uploadRoot() {
+  return getUiUploadRoot()
+}
 const MAX_BYTES = 3 * 1024 * 1024
 const ALLOWED_KINDS = new Set(['logo', 'hero'])
 const MIME_EXT = {
@@ -43,7 +46,7 @@ function shopImagePath(shopId, kind, filename) {
   if (!isAllowedKind(kind)) return null
   const safeName = path.basename(String(filename || ''))
   if (!safeName || safeName !== filename || safeName.includes('..')) return null
-  return path.join(UPLOAD_ROOT, shopId, kind, safeName)
+  return path.join(uploadRoot(), shopId, kind, safeName)
 }
 
 function buildUiImagePath(kind, filename) {
@@ -59,7 +62,7 @@ function parseStoredUiImagePath(url) {
 
 async function saveUiImage(shopId, kind, buffer, ext) {
   if (!isAllowedKind(kind)) throw new Error('ประเภทรูปไม่ถูกต้อง')
-  const dir = path.join(UPLOAD_ROOT, shopId, kind)
+  const dir = path.join(uploadRoot(), shopId, kind)
   await fs.mkdir(dir, { recursive: true })
   const filename = `${crypto.randomUUID()}.${ext}`
   await fs.writeFile(path.join(dir, filename), buffer)
