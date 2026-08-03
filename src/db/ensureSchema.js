@@ -62,6 +62,21 @@ async function ensureSchema() {
       CHECK (start_hour >= 0 AND end_hour <= 24 AND start_hour < end_hour)
     );
 
+    CREATE TABLE IF NOT EXISTS booking_day_hours (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      schedule_date DATE NOT NULL,
+      start_hour SMALLINT NOT NULL,
+      start_minute SMALLINT NOT NULL DEFAULT 0,
+      end_hour SMALLINT NOT NULL,
+      end_minute SMALLINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (start_hour >= 0 AND start_hour <= 23),
+      CHECK (start_minute >= 0 AND start_minute <= 59),
+      CHECK (end_hour >= 0 AND end_hour <= 23),
+      CHECK (end_minute >= 0 AND end_minute <= 59),
+      CHECK (start_hour * 60 + start_minute < end_hour * 60 + end_minute)
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       setting_key TEXT PRIMARY KEY,
       setting_value TEXT,
@@ -123,6 +138,8 @@ async function ensureSchema() {
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS color TEXT;
     ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total NUMERIC(10, 2);
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS start_minute SMALLINT NOT NULL DEFAULT 0;
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS end_minute SMALLINT NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tiktok';
@@ -260,6 +277,7 @@ async function ensureSchema() {
     'bookings',
     'booking_blocks',
     'booking_extra_hours',
+    'booking_day_hours',
     'nailoption',
     'showcase_clips',
     'service_locations',
@@ -319,9 +337,10 @@ async function ensureSchema() {
   }
 
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_date_hour`)
+  await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_shop_date_hour`)
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_shop_date_hour
-      ON bookings (shop_id, booking_date, start_hour)
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_shop_date_slot
+      ON bookings (shop_id, booking_date, start_hour, start_minute)
       WHERE status != 'cancelled'
   `)
 

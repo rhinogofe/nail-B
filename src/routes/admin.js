@@ -13,7 +13,17 @@ const {
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
 const { resolveShowcaseClip, fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
-const { validateBookingStartHour, getShopHours } = require('../utils/bookingHours')
+const { validateBookingStartHour, validateBookingSlot, getShopHours } = require('../utils/bookingHours')
+const {
+  normalizeSlotInput,
+  bookingRowToMinutes,
+  rangesOverlap,
+} = require('../utils/bookingSlotTimes')
+const {
+  validateDayHourPayload,
+  getDayHoursForDate,
+  getDayHoursForMonth,
+} = require('../utils/bookingDayHours')
 const {
   getBookingSlotHours,
   bookingEndHour,
@@ -91,10 +101,8 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
 }
 
-async function assertSlotAvailable(client, shopId, bookingDate, startHour, excludeId = null) {
-  const slotHours = await getBookingSlotHours(client, shopId)
-  const endHour = bookingEndHour(startHour, slotHours)
-  const params = [shopId, bookingDate, startHour, endHour, slotHours]
+async function assertSlotAvailable(client, shopId, bookingDate, slot, excludeId = null) {
+  const params = [shopId, bookingDate]
   let excludeClause = ''
   if (excludeId) {
     params.push(excludeId)
@@ -102,47 +110,68 @@ async function assertSlotAvailable(client, shopId, bookingDate, startHour, exclu
   }
   const overlap = await client.query(
     `
-      SELECT id
+      SELECT id, start_hour, start_minute, end_hour, end_minute
       FROM bookings
       WHERE shop_id = $1
         AND booking_date = $2
         AND status != 'cancelled'
         ${excludeClause}
-        AND start_hour < $4
-        AND COALESCE(end_hour, start_hour + $5) > $3
-      LIMIT 1
     `,
     params
   )
-  if (overlap.rows.length > 0) {
+  const slotHours = await getBookingSlotHours(client, shopId)
+  const hasOverlap = overlap.rows.some((row) => {
+    const existing = bookingRowToMinutes(row, slotHours)
+    return rangesOverlap(slot.startM, slot.endM, existing.startM, existing.endM)
+  })
+  if (hasOverlap) {
     const err = new Error('เวลานี้ทับกับคิวอื่น กรุณาเลือกเวลาใหม่')
     err.status = 409
     throw err
   }
 }
 
-async function assertSlotNotBlocked(client, shopId, bookingDate, startHour) {
-  const slotHours = await getBookingSlotHours(client, shopId)
-  const endHour = bookingEndHour(startHour, slotHours)
+async function assertSlotNotBlocked(client, shopId, bookingDate, slot) {
   const blocked = await client.query(
     `
-      SELECT id
+      SELECT id, start_hour, end_hour, is_full_day
       FROM booking_blocks
       WHERE shop_id = $1
         AND block_date = $2
-        AND (
-          is_full_day = true
-          OR (start_hour < $4 AND end_hour > $3)
-        )
-      LIMIT 1
     `,
-    [shopId, bookingDate, startHour, endHour]
+    [shopId, bookingDate]
   )
-  if (blocked.rows.length > 0) {
+  const isBlocked = blocked.rows.some((row) => {
+    if (row.is_full_day) return true
+    if (row.start_hour == null || row.end_hour == null) return false
+    const blockStart = Number(row.start_hour) * 60
+    const blockEnd = Number(row.end_hour) * 60
+    return rangesOverlap(slot.startM, slot.endM, blockStart, blockEnd)
+  })
+  if (isBlocked) {
     const err = new Error('ช่วงเวลานี้ร้านปิดรับคิว')
     err.status = 409
     throw err
   }
+}
+
+async function resolveBookingSlot(client, shopId, body, fallbackRow = null) {
+  const slotHours = await getBookingSlotHours(client, shopId)
+  const slot = normalizeSlotInput(
+    {
+      start_hour: body.start_hour ?? fallbackRow?.start_hour,
+      start_minute: body.start_minute ?? fallbackRow?.start_minute ?? 0,
+      end_hour: body.end_hour ?? fallbackRow?.end_hour,
+      end_minute: body.end_minute ?? fallbackRow?.end_minute ?? 0,
+    },
+    slotHours
+  )
+  if (!slot) {
+    const err = new Error('ช่วงเวลาไม่ถูกต้อง')
+    err.status = 400
+    throw err
+  }
+  return { slot, slotHours }
 }
 
 async function fetchAdminBookingWithOptions(client, shopId, bookingId) {
@@ -152,7 +181,9 @@ async function fetchAdminBookingWithOptions(client, shopId, bookingId) {
         b.id,
         b.booking_date,
         b.start_hour,
+        b.start_minute,
         b.end_hour,
+        b.end_minute,
         b.status,
         b.created_at,
         b.completed_at,
@@ -220,7 +251,9 @@ router.get('/bookings', async (req, res) => {
           b.id,
           b.booking_date,
           b.start_hour,
+          b.start_minute,
           b.end_hour,
+          b.end_minute,
           b.status,
           b.created_at,
           b.completed_at,
@@ -443,9 +476,10 @@ router.post('/bookings', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
-    const hourError = await validateBookingStartHour(pool, shopId, booking_date, startHourNum, await getBookingSlotHours(pool, shopId))
-    if (hourError) {
-      return res.status(400).json({ error: hourError })
+    const slotHours = await getBookingSlotHours(pool, shopId)
+    const slotError = await validateBookingSlot(pool, shopId, booking_date, req.body, slotHours)
+    if (slotError) {
+      return res.status(400).json({ error: slotError })
     }
 
     const optionIds = normalizeOptionIds(nailoption_ids)
@@ -474,20 +508,35 @@ router.post('/bookings', async (req, res) => {
         throw err
       }
 
-      await assertSlotAvailable(client, shopId, booking_date, startHourNum)
+      const { slot } = await resolveBookingSlot(client, shopId, req.body)
+      await assertSlotNotBlocked(client, shopId, booking_date, slot)
+      await assertSlotAvailable(client, shopId, booking_date, slot)
 
-      const slotHours = await getBookingSlotHours(client, shopId)
-      const endHour = bookingEndHour(startHourNum, slotHours)
       const completedAt = status === 'done' ? new Date() : null
       const bookingTotal = totalProvided ? totalNum : null
 
       const inserted = await client.query(
         `
-          INSERT INTO bookings (shop_id, user_id, booking_date, start_hour, end_hour, status, total, completed_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          INSERT INTO bookings (
+            shop_id, user_id, booking_date,
+            start_hour, start_minute, end_hour, end_minute,
+            status, total, completed_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           RETURNING id
         `,
-        [shopId, user_id, booking_date, startHourNum, endHour, status, bookingTotal, completedAt]
+        [
+          shopId,
+          user_id,
+          booking_date,
+          slot.startHour,
+          slot.startMinute,
+          slot.endHour,
+          slot.endMinute,
+          status,
+          bookingTotal,
+          completedAt,
+        ]
       )
       const bookingId = inserted.rows[0].id
 
@@ -527,7 +576,7 @@ router.patch('/bookings/:id/restore', async (req, res) => {
   try {
     await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
+        `SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
         [req.params.id, shopId]
       )
       if (!existing.rows.length || existing.rows[0].status !== 'cancelled') {
@@ -537,7 +586,8 @@ router.patch('/bookings/:id/restore', async (req, res) => {
       }
 
       const row = existing.rows[0]
-      await assertSlotAvailable(client, shopId, row.booking_date, row.start_hour, row.id)
+      const { slot } = await resolveBookingSlot(client, shopId, {}, row)
+      await assertSlotAvailable(client, shopId, row.booking_date, slot, row.id)
 
       await client.query(
         `
@@ -891,6 +941,81 @@ router.delete('/extra-hours/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการเปิดเพิ่ม' })
     }
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/day-hours', async (req, res) => {
+  const month = req.query.month || new Date().toISOString().slice(0, 7)
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
+  }
+  try {
+    const pool = getPool()
+    const rows = await getDayHoursForMonth(pool, req.shop.id, month)
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/day-hours/:date', async (req, res) => {
+  const date = String(req.params.date || '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'date ต้องเป็น YYYY-MM-DD' })
+  }
+  try {
+    const pool = getPool()
+    const rows = await getDayHoursForDate(pool, req.shop.id, date)
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/day-hours', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const slotHours = await getBookingSlotHours(pool, shopId)
+    const scheduleDate = String(req.body?.schedule_date || '').trim()
+    const existing = await getDayHoursForDate(pool, shopId, scheduleDate)
+    const validated = validateDayHourPayload(req.body, existing, slotHours)
+    if (!validated.ok) return res.status(400).json({ error: validated.error })
+
+    const result = await pool.query(
+      `
+        INSERT INTO booking_day_hours (
+          shop_id, schedule_date, start_hour, start_minute, end_hour, end_minute
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+      `,
+      [
+        shopId,
+        validated.scheduleDate,
+        validated.start_hour,
+        validated.start_minute,
+        validated.end_hour,
+        validated.end_minute,
+      ]
+    )
+    res.status(201).json(result.rows[0])
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/day-hours/:id', async (req, res) => {
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `DELETE FROM booking_day_hours WHERE id = $1 AND shop_id = $2 RETURNING id`,
+      [req.params.id, req.shop.id]
+    )
+    if (!result.rows.length) return res.status(404).json({ error: 'ไม่พบรายการ' })
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1436,7 +1561,7 @@ router.patch('/bookings/:id', async (req, res) => {
     const shopId = req.shop.id
     const booking = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, start_hour, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
+        `SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
         [req.params.id, shopId]
       )
       if (existing.rowCount === 0) throw { status: 404, message: 'ไม่พบคิว' }
@@ -1446,9 +1571,7 @@ router.patch('/bookings/:id', async (req, res) => {
       }
 
       const effectiveDate = hasBookingDate ? bookingDate : String(row.booking_date).slice(0, 10)
-      const effectiveStartHour = hasStartHour ? startHourNum : Number(row.start_hour)
       const dateChanged = hasBookingDate && bookingDate !== String(row.booking_date).slice(0, 10)
-      const hourChanged = hasStartHour && startHourNum !== Number(row.start_hour)
 
       if (hasUserId) {
         const userRes = await client.query(`SELECT id FROM users WHERE id = $1`, [userId])
@@ -1472,23 +1595,35 @@ router.patch('/bookings/:id', async (req, res) => {
         }
       }
 
-      const slotHours = await getBookingSlotHours(client, shopId)
-
+      let effectiveSlot = null
+      let slotHours = null
       if (hasStartHour || hasBookingDate) {
-        const hourError = await validateBookingStartHour(
-          client,
-          shopId,
-          effectiveDate,
-          effectiveStartHour,
-          slotHours
-        )
-        if (hourError) {
-          throw { status: 400, message: hourError }
+        const slotBody = {
+          start_hour: hasStartHour ? req.body.start_hour : row.start_hour,
+          start_minute: req.body.start_minute ?? row.start_minute ?? 0,
+          end_hour: req.body.end_hour ?? row.end_hour,
+          end_minute: req.body.end_minute ?? row.end_minute ?? 0,
         }
-        await assertSlotNotBlocked(client, shopId, effectiveDate, effectiveStartHour)
-        if (dateChanged || hourChanged) {
-          await assertSlotAvailable(client, shopId, effectiveDate, effectiveStartHour, req.params.id)
+        const resolved = await resolveBookingSlot(client, shopId, slotBody, row)
+        effectiveSlot = resolved.slot
+        slotHours = resolved.slotHours
+
+        const slotError = await validateBookingSlot(client, shopId, effectiveDate, slotBody, slotHours)
+        if (slotError) {
+          throw { status: 400, message: slotError }
         }
+
+        const existingSlot = normalizeSlotInput(row, slotHours)
+        const slotChanged = !existingSlot
+          || effectiveSlot.startM !== existingSlot.startM
+          || effectiveSlot.endM !== existingSlot.endM
+
+        await assertSlotNotBlocked(client, shopId, effectiveDate, effectiveSlot)
+        if (dateChanged || slotChanged) {
+          await assertSlotAvailable(client, shopId, effectiveDate, effectiveSlot, req.params.id)
+        }
+      } else {
+        slotHours = await getBookingSlotHours(client, shopId)
       }
 
       const updates = ['total = $1']
@@ -1507,16 +1642,31 @@ router.patch('/bookings/:id', async (req, res) => {
         paramIdx += 1
       }
 
-      if (hasStartHour) {
+      if (hasStartHour && effectiveSlot) {
         updates.push(`start_hour = $${paramIdx}`)
-        params.push(startHourNum)
+        params.push(effectiveSlot.startHour)
+        paramIdx += 1
+        updates.push(`start_minute = $${paramIdx}`)
+        params.push(effectiveSlot.startMinute)
         paramIdx += 1
         updates.push(`end_hour = $${paramIdx}`)
-        params.push(bookingEndHour(startHourNum, slotHours))
+        params.push(effectiveSlot.endHour)
         paramIdx += 1
-      } else if (hasBookingDate) {
+        updates.push(`end_minute = $${paramIdx}`)
+        params.push(effectiveSlot.endMinute)
+        paramIdx += 1
+      } else if (hasBookingDate && effectiveSlot) {
+        updates.push(`start_hour = $${paramIdx}`)
+        params.push(effectiveSlot.startHour)
+        paramIdx += 1
+        updates.push(`start_minute = $${paramIdx}`)
+        params.push(effectiveSlot.startMinute)
+        paramIdx += 1
         updates.push(`end_hour = $${paramIdx}`)
-        params.push(bookingEndHour(effectiveStartHour, slotHours))
+        params.push(effectiveSlot.endHour)
+        paramIdx += 1
+        updates.push(`end_minute = $${paramIdx}`)
+        params.push(effectiveSlot.endMinute)
         paramIdx += 1
       }
 
@@ -1531,7 +1681,7 @@ router.patch('/bookings/:id', async (req, res) => {
           WHERE id = $${idParam}
             AND shop_id = $${shopParam}
             AND status != 'cancelled'
-          RETURNING id, user_id, booking_date, start_hour, end_hour, status, total, created_at, completed_at
+          RETURNING id, user_id, booking_date, start_hour, start_minute, end_hour, end_minute, status, total, created_at, completed_at
         `,
         params
       )
@@ -1643,7 +1793,9 @@ router.get('/users/:id/bookings', async (req, res) => {
           b.id,
           b.booking_date,
           b.start_hour,
+          b.start_minute,
           b.end_hour,
+          b.end_minute,
           b.status,
           b.created_at,
           b.completed_at,

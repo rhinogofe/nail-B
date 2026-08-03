@@ -1,5 +1,10 @@
 const { getShopSettings } = require('./shopSettings')
 const { normalizeBookingSlotHours, DEFAULT_SLOT_HOURS } = require('./bookingSlotHours')
+const { getDayHoursForDate } = require('./bookingDayHours')
+const {
+  normalizeSlotInput,
+  matchesDayWindowSlot,
+} = require('./bookingSlotTimes')
 
 async function getShopHours(pool, shopId) {
   const map = await getShopSettings(pool, shopId, [
@@ -48,6 +53,11 @@ function isWithinNormalHours(startHour, openHour, lastBookingHour) {
 
 async function validateBookingStartHour(poolOrClient, shopId, bookingDate, startHour, duration = DEFAULT_SLOT_HOURS) {
   const slotHours = normalizeBookingSlotHours(duration)
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  if (dayWindows.length) {
+    return 'วันนี้ใช้เวลาเปิด-ปิดเฉพาะวัน กรุณาเลือกช่วงเวลาที่ตั้งไว้'
+  }
+
   const { openHour, lastBookingHour } = await getShopHours(poolOrClient, shopId)
   if (isWithinNormalHours(startHour, openHour, lastBookingHour)) {
     return null
@@ -59,10 +69,44 @@ async function validateBookingStartHour(poolOrClient, shopId, bookingDate, start
   return `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour} หรือในช่วงเปิดเพิ่มของวันนี้`
 }
 
+async function validateBookingSlot(poolOrClient, shopId, bookingDate, body, slotHours = DEFAULT_SLOT_HOURS) {
+  const slot = normalizeSlotInput(body, slotHours)
+  if (!slot) return 'ช่วงเวลาไม่ถูกต้อง'
+
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  if (dayWindows.length) {
+    if (!matchesDayWindowSlot(slot, dayWindows)) {
+      return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
+    }
+    return null
+  }
+
+  if (slot.startMinute !== 0 || slot.endMinute !== 0) {
+    return 'วันนี้ใช้เวลาเปิด-ปิดปกติ (เต็มชั่วโมง)'
+  }
+
+  const hourError = await validateBookingStartHour(
+    poolOrClient,
+    shopId,
+    bookingDate,
+    slot.startHour,
+    slotHours
+  )
+  if (hourError) return hourError
+
+  const expectedEndHour = slot.startHour + normalizeBookingSlotHours(slotHours)
+  if (slot.endHour !== expectedEndHour || slot.endMinute !== 0) {
+    return `ช่วงเวลาต้องยาว ${normalizeBookingSlotHours(slotHours)} ชั่วโมง`
+  }
+  return null
+}
+
 module.exports = {
   getShopHours,
   getExtraHoursForDate,
+  getDayHoursForDate,
   isWithinExtraWindow,
   isWithinNormalHours,
   validateBookingStartHour,
+  validateBookingSlot,
 }

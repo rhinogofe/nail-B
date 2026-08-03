@@ -9,8 +9,9 @@ const {
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
-const { getShopHours, validateBookingStartHour } = require('../utils/bookingHours')
+const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour } = require('../utils/bookingSlotHours')
+const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
 const { readUiImageFile, MIME_EXT, isAllowedKind } = require('../utils/shopUiImages')
 const { getShopSetting } = require('../utils/shopSettings')
@@ -161,7 +162,9 @@ router.get('/', auth, async (req, res) => {
         SELECT
           b.id,
           b.start_hour,
+          b.start_minute,
           b.end_hour,
+          b.end_minute,
           b.status,
           b.created_at,
           u.name        AS user_name,
@@ -172,7 +175,7 @@ router.get('/', auth, async (req, res) => {
         WHERE b.shop_id = $1
           AND b.booking_date = $2
           AND b.status != 'cancelled'
-        ORDER BY b.start_hour
+        ORDER BY b.start_hour, b.start_minute
       `,
       [req.shop.id, date, req.user.id]
     )
@@ -239,6 +242,30 @@ router.get('/extra-hours', auth, async (req, res) => {
   }
 })
 
+router.get('/day-hours', auth, async (req, res) => {
+  const { from, to, date } = req.query
+  try {
+    const pool = getPool()
+    if (date) {
+      const rows = await getDayHoursForDate(pool, req.shop.id, date)
+      return res.json(rows)
+    }
+    if (!from || !to) return res.status(400).json({ error: 'ต้องระบุ from และ to หรือ date' })
+    const result = await pool.query(
+      `
+        SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute
+        FROM booking_day_hours
+        WHERE shop_id = $1 AND schedule_date BETWEEN $2 AND $3
+        ORDER BY schedule_date ASC, start_hour ASC, start_minute ASC
+      `,
+      [req.shop.id, from, to]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.post('/', auth, async (req, res) => {
   const { booking_date, start_hour, option_ids } = req.body
   if (!booking_date || start_hour == null)
@@ -256,8 +283,11 @@ router.post('/', auth, async (req, res) => {
     if (dateError) return res.status(400).json({ error: dateError })
 
     const slotHours = await getBookingSlotHours(pool, shopId)
-    const hourError = await validateBookingStartHour(pool, shopId, booking_date, start_hour, slotHours)
-    if (hourError) return res.status(400).json({ error: hourError })
+    const slotError = await validateBookingSlot(pool, shopId, booking_date, req.body, slotHours)
+    if (slotError) return res.status(400).json({ error: slotError })
+
+    const slot = normalizeSlotInput(req.body, slotHours)
+    if (!slot) return res.status(400).json({ error: 'ช่วงเวลาไม่ถูกต้อง' })
 
     const uniqueOptionIds = [...new Set(option_ids.map(String))]
     const isValidOptions = await validateOptionIds(pool, shopId, uniqueOptionIds, booking_date)
@@ -270,51 +300,61 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ error: requiredError })
     }
 
-    const endHour = bookingEndHour(start_hour, slotHours)
     const overlap = await pool.query(
       `
-        SELECT id
+        SELECT id, start_hour, start_minute, end_hour, end_minute
         FROM bookings
         WHERE shop_id = $1
           AND booking_date = $2
           AND status != 'cancelled'
-          AND start_hour < $4
-          AND COALESCE(end_hour, start_hour + $5) > $3
-        LIMIT 1
       `,
-      [shopId, booking_date, start_hour, endHour, slotHours]
+      [shopId, booking_date]
     )
-
-    if (overlap.rows.length > 0) {
+    const hasOverlap = overlap.rows.some((row) => {
+      const existing = bookingRowToMinutes(row, slotHours)
+      return rangesOverlap(slot.startM, slot.endM, existing.startM, existing.endM)
+    })
+    if (hasOverlap) {
       return res.status(409).json({ error: 'เวลานี้ทับกับคิวอื่น กรุณาเลือกเวลาใหม่' })
     }
 
     const blocked = await pool.query(
       `
-        SELECT id
+        SELECT id, start_hour, end_hour, is_full_day
         FROM booking_blocks
-        WHERE shop_id = $1
-          AND block_date = $2
-          AND (
-            is_full_day = true
-            OR (start_hour < $4 AND end_hour > $3)
-          )
-        LIMIT 1
+        WHERE shop_id = $1 AND block_date = $2
       `,
-      [shopId, booking_date, start_hour, endHour]
+      [shopId, booking_date]
     )
-
-    if (blocked.rows.length > 0) {
+    const isBlocked = blocked.rows.some((row) => {
+      if (row.is_full_day) return true
+      const blockStart = Number(row.start_hour) * 60
+      const blockEnd = Number(row.end_hour) * 60
+      return rangesOverlap(slot.startM, slot.endM, blockStart, blockEnd)
+    })
+    if (isBlocked) {
       return res.status(409).json({ error: 'ช่วงเวลานี้ร้านปิดรับคิว' })
     }
 
     const result = await pool.query(
       `
-        INSERT INTO bookings (shop_id, user_id, booking_date, start_hour, end_hour, status)
-        VALUES ($1, $2, $3, $4, $5, 'awaiting_payment')
-        RETURNING id, booking_date, start_hour, end_hour, status
+        INSERT INTO bookings (
+          shop_id, user_id, booking_date,
+          start_hour, start_minute, end_hour, end_minute,
+          status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment')
+        RETURNING id, booking_date, start_hour, start_minute, end_hour, end_minute, status
       `,
-      [shopId, req.user.id, booking_date, start_hour, endHour]
+      [
+        shopId,
+        req.user.id,
+        booking_date,
+        slot.startHour,
+        slot.startMinute,
+        slot.endHour,
+        slot.endMinute,
+      ]
     )
     await syncBookingOptions(pool, result.rows[0].id, uniqueOptionIds)
     const bookingId = result.rows[0].id
