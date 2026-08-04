@@ -4,8 +4,25 @@ const admin = require('../middleware/adminMiddleware')
 const { getPool } = require('../db/pool')
 const { isSuperAdmin } = require('../utils/shopAdmins')
 const { createShopRecord } = require('../utils/createShopRecord')
+const { getUiSettings, UI_DEFAULTS } = require('../utils/shopUiSettings')
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+function frontendBaseUrl() {
+  return String(process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/$/, '')
+}
+
+function apiBaseUrl(req) {
+  return String(process.env.API_PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '')
+}
+
+function buildShareImage(req, slug, ui) {
+  const logo = String(ui.ui_logo_url || '').trim()
+  if (!logo) return ''
+  if (/^https?:\/\//i.test(logo)) return logo
+  const path = logo.startsWith('/') ? logo : `/${logo}`
+  return `${apiBaseUrl(req)}${path}?shop=${encodeURIComponent(slug)}`
+}
 
 async function requireSuperAdminUser(req, res, next) {
   try {
@@ -30,6 +47,38 @@ router.get('/', async (req, res) => {
        ORDER BY name ASC`
     )
     res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/:slug/share-preview', async (req, res) => {
+  const slug = req.params.slug.toLowerCase()
+  if (!SLUG_RE.test(slug)) {
+    return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
+  }
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT id, slug, name, is_active FROM shops WHERE slug = $1 LIMIT 1`,
+      [slug]
+    )
+    const shop = result.rows[0]
+    if (!shop || !shop.is_active) {
+      return res.status(404).json({ error: 'ไม่พบร้าน' })
+    }
+
+    const ui = await getUiSettings(pool, shop.id)
+    const pageTitle = String(ui.ui_page_title || '').trim()
+    const title = pageTitle && pageTitle !== UI_DEFAULTS.ui_page_title ? pageTitle : shop.name
+    const description = String(ui.ui_tagline || '').trim() || `จองคิว ${shop.name}`
+    const image = buildShareImage(req, slug, ui)
+    const siteBase = frontendBaseUrl()
+    const url = siteBase ? `${siteBase}/${slug}/bookings` : `/${slug}/bookings`
+
+    res.set('Cache-Control', 'public, max-age=300')
+    res.json({ title, description, image, url })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
