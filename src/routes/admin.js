@@ -29,6 +29,7 @@ const {
   getBookingSlotHours,
   bookingEndHour,
   normalizeBookingSlotHours,
+  normalizeBookingDisplayMode,
   MIN_SLOT_HOURS,
   MAX_SLOT_HOURS,
 } = require('../utils/bookingSlotHours')
@@ -1384,7 +1385,7 @@ router.get('/settings/booking-display', async (req, res) => {
   try {
     const pool = getPool()
     const value = await getShopSetting(pool, req.shop.id, 'booking_display_mode')
-    const mode = value === 'slots_2h' ? 'slots_2h' : 'normal'
+    const mode = normalizeBookingDisplayMode(value)
     res.json({ display_mode: mode })
   } catch (err) {
     res.status(500).json({ error: err.message })

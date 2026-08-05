@@ -3,6 +3,12 @@ const { getShopSetting } = require('./shopSettings')
 const MIN_SLOT_HOURS = 1
 const MAX_SLOT_HOURS = 4
 const DEFAULT_SLOT_HOURS = 2
+const DEFAULT_DISPLAY_MODE = 'slots_2h'
+
+function normalizeBookingDisplayMode(value) {
+  if (value === 'normal') return 'normal'
+  return DEFAULT_DISPLAY_MODE
+}
 
 function normalizeBookingSlotHours(value) {
   const n = Number(value)
@@ -28,6 +34,8 @@ module.exports = {
   MIN_SLOT_HOURS,
   MAX_SLOT_HOURS,
   DEFAULT_SLOT_HOURS,
+  DEFAULT_DISPLAY_MODE,
+  normalizeBookingDisplayMode,
   normalizeBookingSlotHours,
   getBookingSlotHours,
   bookingEndHour,

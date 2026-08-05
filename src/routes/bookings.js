@@ -10,7 +10,7 @@ const {
 } = require('../utils/bookingOptions')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
-const { getBookingSlotHours, bookingEndHour } = require('../utils/bookingSlotHours')
+const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
 const { readUiImageFile, MIME_EXT, isAllowedKind } = require('../utils/shopUiImages')
@@ -85,7 +85,7 @@ router.get('/booking-display', auth, async (req, res) => {
   try {
     const pool = getPool()
     const value = await getShopSetting(pool, req.shop.id, 'booking_display_mode')
-    const mode = value === 'slots_2h' ? 'slots_2h' : 'normal'
+    const mode = normalizeBookingDisplayMode(value)
     res.json({ display_mode: mode })
   } catch (err) {
     res.status(500).json({ error: err.message })
