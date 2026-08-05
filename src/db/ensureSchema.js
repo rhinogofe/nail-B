@@ -8,6 +8,46 @@ async function ensureShopUsageColumns(pool) {
   await db.query(`ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_started_at TIMESTAMPTZ`)
 }
 
+async function ensureServiceCategoriesSchema(pool) {
+  const db = pool || await getPool()
+  const shopsExists = await db.query(`SELECT to_regclass('public.shops') AS reg`)
+  if (!shopsExists.rows[0]?.reg) return
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS service_categories (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  const nailoptionExists = await db.query(`SELECT to_regclass('public.nailoption') AS reg`)
+  if (nailoptionExists.rows[0]?.reg) {
+    await db.query(`
+      ALTER TABLE nailoption
+      ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES service_categories(id) ON DELETE SET NULL
+    `)
+  }
+
+  await db.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_service_categories_shop_name
+      ON service_categories (shop_id, name)
+  `)
+
+  if (nailoptionExists.rows[0]?.reg) {
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS ix_nailoption_category_id
+        ON nailoption (category_id)
+        WHERE category_id IS NOT NULL
+    `)
+  }
+}
+
 async function ensureSchema() {
   const pool = await getPool()
 
@@ -211,23 +251,6 @@ async function ensureSchema() {
   `)
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS service_categories (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      description TEXT,
-      sort_order INT NOT NULL DEFAULT 0,
-      is_active BOOLEAN NOT NULL DEFAULT true,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `)
-
-  await pool.query(`
-    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES service_categories(id) ON DELETE SET NULL;
-  `)
-
-  await pool.query(`
     INSERT INTO app_settings (setting_key, setting_value)
     VALUES
       ('deposit_amount',         '300'),
@@ -289,6 +312,7 @@ async function ensureSchema() {
   `)
 
   await ensureShopUsageColumns(pool)
+  await ensureServiceCategoriesSchema(pool)
 
   await pool.query(`
     INSERT INTO shops (slug, name)
@@ -375,17 +399,6 @@ async function ensureSchema() {
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_service_locations_shop_name
       ON service_locations (shop_id, name)
-  `)
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_service_categories_shop_name
-      ON service_categories (shop_id, name)
-  `)
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS ix_nailoption_category_id
-      ON nailoption (category_id)
-      WHERE category_id IS NOT NULL
   `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_showcase_clips_video_id`)
@@ -497,4 +510,4 @@ async function ensureSchema() {
   console.log('✅ PostgreSQL schema ready')
 }
 
-module.exports = { ensureSchema, ensureShopUsageColumns }
+module.exports = { ensureSchema, ensureShopUsageColumns, ensureServiceCategoriesSchema }

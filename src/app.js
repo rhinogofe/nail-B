@@ -4,7 +4,7 @@ const express = require('express')
 const cors    = require('cors')
 const { passport } = require('./config/passport')
 const { createCorsOptions } = require('./config/cors')
-const { ensureSchema, ensureShopUsageColumns } = require('./db/ensureSchema')
+const { ensureSchema, ensureShopUsageColumns, ensureServiceCategoriesSchema } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 const { expireOldChatImages } = require('./utils/chatImages')
@@ -52,8 +52,9 @@ async function startServer() {
   try {
     const pool = await getPool()
     await ensureShopUsageColumns(pool)
+    await ensureServiceCategoriesSchema(pool)
   } catch (err) {
-    console.error('⚠️ Shop usage columns migration:', err.message)
+    console.error('⚠️ Critical schema migration:', err.message)
   }
 
   try {
