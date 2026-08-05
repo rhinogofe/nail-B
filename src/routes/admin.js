@@ -40,7 +40,8 @@ const {
   isAllowedKind,
 } = require('../utils/shopUiImages')
 const { getCouponSettings, setCouponSettings, awardCompletionPoints } = require('../utils/couponSettings')
-const { getLinePushSettings, setLinePushSettings, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
+const { getLinePushSettings, setLinePushSettings, enrichShopsWithLinePush, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
+const { isCentralLineBotEnabled } = require('../utils/lineBotMode')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const {
   getUnpaidExpireSettings,
@@ -77,7 +78,8 @@ router.get('/shops', async (req, res) => {
          FROM shops
          ORDER BY is_active DESC, name ASC`
       )
-      return res.json(result.rows.map(enrichShopUsage))
+      const shops = result.rows.map(enrichShopUsage)
+      return res.json(await enrichShopsWithLinePush(pool, shops))
     }
     const result = await pool.query(
       `SELECT ${shopReturn}
@@ -86,7 +88,47 @@ router.get('/shops', async (req, res) => {
        LIMIT 1`,
       [req.shop.id]
     )
-    res.json(result.rows.map(enrichShopUsage))
+    const shops = result.rows.map(enrichShopUsage)
+    res.json(await enrichShopsWithLinePush(pool, shops))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/shops/:slug/line-push-enabled', async (req, res) => {
+  if (!req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลัก (default) เท่านั้น' })
+  }
+  const slug = String(req.params.slug || '').trim().toLowerCase()
+  if (!slug || slug === 'default') {
+    return res.status(400).json({ error: 'ไม่สามารถตั้งค่าแจ้งเตือนสำหรับ default ได้' })
+  }
+  if (typeof req.body?.enabled !== 'boolean') {
+    return res.status(400).json({ error: 'ต้องระบุ enabled (true/false)' })
+  }
+  try {
+    const pool = getPool()
+    const existing = await pool.query(
+      `SELECT id, slug, name FROM shops WHERE slug = $1 LIMIT 1`,
+      [slug]
+    )
+    const shop = existing.rows[0]
+    if (!shop) return res.status(404).json({ error: 'ไม่พบสาขา' })
+
+    const settings = await setLinePushSettings(pool, shop.id, { enabled: req.body.enabled })
+    const refreshed = await getLinePushSettings(pool, shop.id, { shopSlug: shop.slug })
+    const configured = refreshed.uses_own_bot
+      ? refreshed.tokenConfigured && refreshed.secretConfigured && Boolean(refreshed.pushToId)
+      : refreshed.tokenConfigured && Boolean(refreshed.pushToId)
+    res.json({
+      success: true,
+      slug: shop.slug,
+      name: shop.name,
+      line_push_enabled: refreshed.pushEnabledFlag,
+      line_push_configured: configured,
+      line_push_ready: refreshed.pushEnabledFlag && configured,
+      line_use_own_bot: refreshed.use_own_bot,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -1097,13 +1139,22 @@ router.patch('/settings/coupon', async (req, res) => {
 router.get('/settings/line-push', async (req, res) => {
   try {
     const pool = getPool()
-    const settings = await getLinePushSettings(pool, req.shop.id)
+    const slug = req.shop.slug
+    const settings = await getLinePushSettings(pool, req.shop.id, { shopSlug: slug })
     res.json({
       enabled: settings.pushEnabledFlag,
+      can_edit_enabled: Boolean(req.isSuperAdmin),
+      central_bot_enabled: settings.central_bot_enabled,
+      use_own_bot: settings.use_own_bot,
+      uses_own_bot: settings.uses_own_bot,
+      can_edit_use_own_bot: Boolean(req.isSuperAdmin && settings.central_bot_enabled && slug !== 'default'),
       push_to_id: settings.pushToId,
       token_masked: settings.tokenMasked,
+      secret_masked: settings.secretMasked,
       token_configured: settings.tokenConfigured,
+      secret_configured: settings.secretConfigured,
       token_from_env: settings.tokenFromEnv,
+      webhook_url: settings.webhookPath,
       notify_template: settings.notifyTemplate,
       default_template: LINE_NOTIFY_DEFAULT_TEMPLATE,
     })
@@ -1115,22 +1166,49 @@ router.get('/settings/line-push', async (req, res) => {
 router.patch('/settings/line-push', async (req, res) => {
   try {
     const pool = getPool()
+    const slug = req.shop.slug
     const partial = {}
-    if (typeof req.body?.enabled === 'boolean') partial.enabled = req.body.enabled
+    if (typeof req.body?.enabled === 'boolean') {
+      if (!req.isSuperAdmin) {
+        return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่เปิด/ปิดแจ้งเตือน LINE ได้' })
+      }
+      partial.enabled = req.body.enabled
+    }
+    if (typeof req.body?.use_own_bot === 'boolean') {
+      if (!req.isSuperAdmin || slug === 'default') {
+        return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่เปิดโหมด Premium (บอทของร้านเอง) ได้' })
+      }
+      if (!isCentralLineBotEnabled()) {
+        return res.status(400).json({ error: 'บอทกลางปิดอยู่ — ทุกสาขาใช้บอทของตัวเองอยู่แล้ว' })
+      }
+      partial.useOwnBot = req.body.use_own_bot
+    }
     if (req.body?.push_to_id != null) partial.pushToId = req.body.push_to_id
     if (req.body?.notify_template != null) partial.notifyTemplate = req.body.notify_template
-    if (req.body?.channel_access_token != null && !process.env.LINE_BOT_CHANNEL_ACCESS_TOKEN) {
+    if (req.body?.channel_access_token != null) {
       partial.channelAccessToken = req.body.channel_access_token
     }
+    if (req.body?.channel_secret != null) {
+      partial.channelSecret = req.body.channel_secret
+    }
     const settings = await setLinePushSettings(pool, req.shop.id, partial)
+    const refreshed = await getLinePushSettings(pool, req.shop.id, { shopSlug: slug })
     res.json({
       success: true,
-      enabled: settings.pushEnabledFlag,
-      push_to_id: settings.pushToId,
-      token_masked: settings.tokenMasked,
-      token_configured: settings.tokenConfigured,
-      token_from_env: settings.tokenFromEnv,
-      notify_template: settings.notifyTemplate,
+      enabled: refreshed.pushEnabledFlag,
+      can_edit_enabled: Boolean(req.isSuperAdmin),
+      central_bot_enabled: refreshed.central_bot_enabled,
+      use_own_bot: refreshed.use_own_bot,
+      uses_own_bot: refreshed.uses_own_bot,
+      can_edit_use_own_bot: Boolean(req.isSuperAdmin && refreshed.central_bot_enabled && slug !== 'default'),
+      push_to_id: refreshed.pushToId,
+      token_masked: refreshed.tokenMasked,
+      secret_masked: refreshed.secretMasked,
+      token_configured: refreshed.tokenConfigured,
+      secret_configured: refreshed.secretConfigured,
+      token_from_env: refreshed.tokenFromEnv,
+      webhook_url: refreshed.webhookPath,
+      notify_template: refreshed.notifyTemplate,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1141,6 +1219,10 @@ router.post('/settings/line-push/test', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const settings = await getLinePushSettings(pool, shopId)
+    if (!req.isSuperAdmin && !settings.pushEnabledFlag) {
+      return res.status(403).json({ error: 'แอดมินหลักปิดแจ้งเตือน LINE ไว้ — ติดต่อแอดมินหลักเพื่อเปิด' })
+    }
     const testMessage = req.body?.message
       || `✅ ทดสอบแจ้งเตือน LINE จาก ${req.shop.name}\nเวลา: ${new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })}`
     const result = await notifyShopNewBooking(pool, shopId, null, {
@@ -1148,15 +1230,17 @@ router.post('/settings/line-push/test', async (req, res) => {
       testMessage,
     })
     if (result.skipped) {
-      return res.status(400).json({
-        error: 'ยังตั้งค่า LINE ไม่ครบ — เปิดใช้งาน Channel Access Token และ User/Group ID',
-      })
+      const hint = settings.uses_own_bot
+        ? 'ยังตั้งค่า LINE ไม่ครบ — กรอก Channel Access Token, Channel Secret และ User/Group ID'
+        : 'ยังตั้งค่า LINE ไม่ครบ — ตั้ง User/Group ID (หรือทักบอทกลาง slug ร้าน)'
+      return res.status(400).json({ error: hint })
     }
     if (!result.ok) {
       if (result.status === 401) {
-        return res.status(502).json({
-          error: 'Channel Access Token ไม่ถูกต้อง — กด Issue ใหม่ที่ LINE Developers แล้วอัปเดตใน Render (LINE_BOT_CHANNEL_ACCESS_TOKEN) หรือแอดมิน (อย่าใส่ Channel secret)',
-        })
+        const hint = settings.uses_own_bot
+          ? 'Channel Access Token ไม่ถูกต้อง — กด Issue ใหม่ที่ LINE Developers แล้วอัปเดตในแอดมิน (อย่าใส่ Channel secret)'
+          : 'Channel Access Token ไม่ถูกต้อง — กด Issue ใหม่ที่ LINE Developers แล้วอัปเดต LINE_BOT_CHANNEL_ACCESS_TOKEN บน server'
+        return res.status(502).json({ error: hint })
       }
       return res.status(502).json({
         error: result.error || 'ส่ง LINE ไม่สำเร็จ ตรวจสอบ Token และ User/Group ID',
