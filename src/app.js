@@ -4,7 +4,7 @@ const express = require('express')
 const cors    = require('cors')
 const { passport } = require('./config/passport')
 const { createCorsOptions } = require('./config/cors')
-const { ensureSchema } = require('./db/ensureSchema')
+const { ensureSchema, ensureShopUsageColumns } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 const { expireOldChatImages } = require('./utils/chatImages')
@@ -47,6 +47,13 @@ async function startServer() {
     await ensureSchema()
   } catch (err) {
     console.error('⚠️ Startup DB migration warning:', err.message)
+  }
+
+  try {
+    const pool = await getPool()
+    await ensureShopUsageColumns(pool)
+  } catch (err) {
+    console.error('⚠️ Shop usage columns migration:', err.message)
   }
 
   try {

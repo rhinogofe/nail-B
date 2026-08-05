@@ -1,5 +1,13 @@
 const { getPool } = require('./pool')
 
+async function ensureShopUsageColumns(pool) {
+  const db = pool || await getPool()
+  const exists = await db.query(`SELECT to_regclass('public.shops') AS reg`)
+  if (!exists.rows[0]?.reg) return
+  await db.query(`ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_limit_days INT`)
+  await db.query(`ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_started_at TIMESTAMPTZ`)
+}
+
 async function ensureSchema() {
   const pool = await getPool()
 
@@ -280,10 +288,7 @@ async function ensureSchema() {
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image_url TEXT;
   `)
 
-  await pool.query(`
-    ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_limit_days INT;
-    ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_started_at TIMESTAMPTZ;
-  `)
+  await ensureShopUsageColumns(pool)
 
   await pool.query(`
     INSERT INTO shops (slug, name)
@@ -492,4 +497,4 @@ async function ensureSchema() {
   console.log('✅ PostgreSQL schema ready')
 }
 
-module.exports = { ensureSchema }
+module.exports = { ensureSchema, ensureShopUsageColumns }
