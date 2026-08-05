@@ -1,3 +1,4 @@
+const { enrichShopUsage } = require('../utils/shopUsageLimit')
 const router = require('express').Router()
 const auth   = require('../middleware/authMiddleware')
 const admin  = require('../middleware/adminMiddleware')
@@ -69,22 +70,23 @@ router.use(shopAdminAccess)
 router.get('/shops', async (req, res) => {
   try {
     const pool = getPool()
+    const shopReturn = 'id, slug, name, is_active, created_at, usage_limit_days, usage_started_at'
     if (req.isSuperAdmin) {
       const result = await pool.query(
-        `SELECT id, slug, name, is_active, created_at
+        `SELECT ${shopReturn}
          FROM shops
          ORDER BY is_active DESC, name ASC`
       )
-      return res.json(result.rows)
+      return res.json(result.rows.map(enrichShopUsage))
     }
     const result = await pool.query(
-      `SELECT id, slug, name, is_active, created_at
+      `SELECT ${shopReturn}
        FROM shops
        WHERE id = $1
        LIMIT 1`,
       [req.shop.id]
     )
-    res.json(result.rows)
+    res.json(result.rows.map(enrichShopUsage))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -2100,6 +2102,133 @@ router.delete('/users/:id', async (req, res) => {
   }
 })
 
+// ─── Service categories (หมวดหมู่บริการ) ─────────────────────
+
+const NAILOPTION_OPTION_FIELDS = `
+  n.id, n.option_name, n.description, n.price, n.duration_min, n.is_active, n.is_required, n.color,
+  n.show_from_date, n.show_to_date, n.sort_order, n.category_id,
+  c.name AS category_name, COALESCE(c.sort_order, 9999) AS category_sort_order,
+  n.created_at, n.updated_at
+`
+
+const NAILOPTION_OPTION_JOINS = `
+  FROM nailoption n
+  LEFT JOIN service_categories c ON c.id = n.category_id AND c.shop_id = n.shop_id
+`
+
+async function resolveCategoryId(pool, shopId, categoryId) {
+  if (categoryId == null || categoryId === '') return null
+  const id = String(categoryId).trim()
+  if (!id) return null
+  const result = await pool.query(
+    `SELECT id FROM service_categories WHERE id = $1 AND shop_id = $2 LIMIT 1`,
+    [id, shopId]
+  )
+  if (!result.rows[0]) return { error: 'ไม่พบหมวดหมู่' }
+  return id
+}
+
+router.get('/service-categories', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `
+      SELECT id, name, description, sort_order, is_active, created_at, updated_at
+      FROM service_categories
+      WHERE shop_id = $1
+      ORDER BY sort_order ASC, name ASC
+    `,
+      [shopId]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/service-categories', async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const description = String(req.body?.description || '').trim() || null
+  const sort_order = Number(req.body?.sort_order ?? 0)
+  const is_active = req.body?.is_active !== false
+
+  if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อหมวดหมู่' })
+
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `
+        INSERT INTO service_categories (shop_id, name, description, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, name, description, sort_order, is_active, created_at, updated_at
+      `,
+      [shopId, name, description, sort_order, is_active]
+    )
+    res.status(201).json({ success: true, category: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อหมวดหมู่ซ้ำ กรุณาใช้ชื่ออื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/service-categories/:id', async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const description = String(req.body?.description || '').trim() || null
+  const sort_order = Number(req.body?.sort_order ?? 0)
+  const is_active = Boolean(req.body?.is_active)
+
+  if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อหมวดหมู่' })
+
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `
+        UPDATE service_categories
+        SET
+          name = $1,
+          description = $2,
+          sort_order = $3,
+          is_active = $4,
+          updated_at = NOW()
+        WHERE id = $5 AND shop_id = $6
+        RETURNING id, name, description, sort_order, is_active, created_at, updated_at
+      `,
+      [name, description, sort_order, is_active, req.params.id, shopId]
+    )
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบหมวดหมู่' })
+    }
+    res.json({ success: true, category: result.rows[0] })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อหมวดหมู่ซ้ำ กรุณาใช้ชื่ออื่น' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/service-categories/:id', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const result = await pool.query(
+      `DELETE FROM service_categories WHERE id = $1 AND shop_id = $2`,
+      [req.params.id, shopId]
+    )
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'ไม่พบหมวดหมู่' })
+    }
+    res.json({ success: true, message: 'ลบหมวดหมู่แล้ว' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // ─── Nailoption CRUD ───────────────────────────────────────────
 
 function parseOptionalDate(value) {
@@ -2133,11 +2262,10 @@ router.get('/nailoptions', async (req, res) => {
     const shopId = req.shop.id
     const result = await pool.query(
       `
-      SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
-             show_from_date, show_to_date, sort_order, created_at, updated_at
-      FROM nailoption
-      WHERE shop_id = $1
-      ORDER BY sort_order ASC, created_at ASC, option_name ASC
+      SELECT ${NAILOPTION_OPTION_FIELDS}
+      ${NAILOPTION_OPTION_JOINS}
+      WHERE n.shop_id = $1
+      ORDER BY category_sort_order ASC, n.sort_order ASC, n.created_at ASC, n.option_name ASC
     `,
       [shopId]
     )
@@ -2174,6 +2302,8 @@ router.post('/nailoptions', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const categoryParsed = await resolveCategoryId(pool, shopId, req.body?.category_id)
+    if (categoryParsed?.error) return res.status(400).json({ error: categoryParsed.error })
     const orderRes = await pool.query(
       `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM nailoption WHERE shop_id = $1`,
       [shopId]
@@ -2183,13 +2313,13 @@ router.post('/nailoptions', async (req, res) => {
       `
         INSERT INTO nailoption (
           shop_id, option_name, description, price, duration_min, is_active, is_required, color,
-          show_from_date, show_to_date, sort_order
+          show_from_date, show_to_date, sort_order, category_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
-                  show_from_date, show_to_date, sort_order, created_at, updated_at
+                  show_from_date, show_to_date, sort_order, category_id, created_at, updated_at
       `,
-      [shopId, option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, sort_order]
+      [shopId, option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, sort_order, categoryParsed]
     )
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
@@ -2224,6 +2354,8 @@ router.patch('/nailoptions/:id', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const categoryParsed = await resolveCategoryId(pool, shopId, req.body?.category_id)
+    if (categoryParsed?.error) return res.status(400).json({ error: categoryParsed.error })
     const result = await pool.query(
       `
         UPDATE nailoption
@@ -2237,12 +2369,13 @@ router.patch('/nailoptions/:id', async (req, res) => {
           color = $7,
           show_from_date = $8,
           show_to_date = $9,
+          category_id = $10,
           updated_at = NOW()
-        WHERE id = $10 AND shop_id = $11
+        WHERE id = $11 AND shop_id = $12
         RETURNING id, option_name, description, price, duration_min, is_active, is_required, color,
-                  show_from_date, show_to_date, sort_order, created_at, updated_at
+                  show_from_date, show_to_date, sort_order, category_id, created_at, updated_at
       `,
-      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, req.params.id, shopId]
+      [option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, categoryParsed, req.params.id, shopId]
     )
 
     if (result.rowCount === 0) {

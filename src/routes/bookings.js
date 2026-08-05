@@ -123,28 +123,47 @@ router.get('/options', auth, async (req, res) => {
 
   try {
     const pool = getPool()
-    const params = [req.shop.id]
+    const shopId = req.shop.id
+    const params = [shopId]
     let dateFilter = ''
     if (date) {
       params.push(String(date))
       dateFilter = `
-        AND (show_from_date IS NULL OR show_from_date <= $${params.length})
-        AND (show_to_date IS NULL OR show_to_date >= $${params.length})
+        AND (n.show_from_date IS NULL OR n.show_from_date <= $${params.length})
+        AND (n.show_to_date IS NULL OR n.show_to_date >= $${params.length})
       `
     }
 
-    const result = await pool.query(
-      `
-        SELECT id, option_name, description, price, duration_min, is_active, is_required, color,
-               show_from_date, show_to_date
-        FROM nailoption
-        WHERE shop_id = $1 AND is_active = true
-        ${dateFilter}
-        ORDER BY sort_order ASC, option_name ASC
-      `,
-      params
-    )
-    res.json(result.rows)
+    const [categoriesRes, optionsRes] = await Promise.all([
+      pool.query(
+        `
+          SELECT id, name, description, sort_order
+          FROM service_categories
+          WHERE shop_id = $1 AND is_active = true
+          ORDER BY sort_order ASC, name ASC
+        `,
+        [shopId]
+      ),
+      pool.query(
+        `
+          SELECT
+            n.id, n.option_name, n.description, n.price, n.duration_min, n.is_active, n.is_required, n.color,
+            n.show_from_date, n.show_to_date, n.category_id,
+            c.name AS category_name, COALESCE(c.sort_order, 9999) AS category_sort_order
+          FROM nailoption n
+          LEFT JOIN service_categories c ON c.id = n.category_id AND c.shop_id = n.shop_id
+          WHERE n.shop_id = $1 AND n.is_active = true
+          ${dateFilter}
+          ORDER BY category_sort_order ASC, n.sort_order ASC, n.option_name ASC
+        `,
+        params
+      ),
+    ])
+
+    res.json({
+      categories: categoriesRes.rows,
+      options: optionsRes.rows,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

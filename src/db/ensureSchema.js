@@ -203,6 +203,23 @@ async function ensureSchema() {
   `)
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_categories (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `)
+
+  await pool.query(`
+    ALTER TABLE nailoption ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES service_categories(id) ON DELETE SET NULL;
+  `)
+
+  await pool.query(`
     INSERT INTO app_settings (setting_key, setting_value)
     VALUES
       ('deposit_amount',         '300'),
@@ -264,6 +281,11 @@ async function ensureSchema() {
   `)
 
   await pool.query(`
+    ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_limit_days INT;
+    ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_started_at TIMESTAMPTZ;
+  `)
+
+  await pool.query(`
     INSERT INTO shops (slug, name)
     VALUES ('default', 'Nail Thuean')
     ON CONFLICT (slug) DO NOTHING
@@ -283,7 +305,7 @@ async function ensureSchema() {
     'service_locations',
   ]
   for (const table of tenantTables) {
-    await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS shop_id UUID REFERENCES shops(id)`)
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS shop_id UUID REFERENCES shops(id) ON DELETE CASCADE`)
     await pool.query(
       `UPDATE ${table} SET shop_id = $1 WHERE shop_id IS NULL`,
       [defaultShopId]
@@ -350,11 +372,61 @@ async function ensureSchema() {
       ON service_locations (shop_id, name)
   `)
 
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_service_categories_shop_name
+      ON service_categories (shop_id, name)
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_nailoption_category_id
+      ON nailoption (category_id)
+      WHERE category_id IS NOT NULL
+  `)
+
   await pool.query(`DROP INDEX IF EXISTS ux_showcase_clips_video_id`)
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_showcase_clips_shop_video_id
       ON showcase_clips (shop_id, video_id)
   `)
+
+  // Existing DBs may have shop_id FK without ON DELETE CASCADE — repair on startup.
+  const shopChildTables = [
+    'bookings',
+    'booking_blocks',
+    'booking_extra_hours',
+    'booking_day_hours',
+    'nailoption',
+    'showcase_clips',
+    'service_locations',
+  ]
+  for (const table of shopChildTables) {
+    await pool.query(`
+      DO $$
+      DECLARE cname text;
+      BEGIN
+        SELECT c.conname INTO cname
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+        WHERE t.relname = '${table}'
+          AND a.attname = 'shop_id'
+          AND c.contype = 'f'
+        LIMIT 1;
+        IF cname IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', '${table}', cname);
+        END IF;
+      END $$;
+    `)
+    await pool.query(`
+      ALTER TABLE ${table}
+      DROP CONSTRAINT IF EXISTS ${table}_shop_id_fkey
+    `)
+    await pool.query(`
+      ALTER TABLE ${table}
+      ADD CONSTRAINT ${table}_shop_id_fkey
+      FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+    `)
+  }
 
   // Legacy backfill: admins linked to every shop → keep only default (super admin)
   await pool.query(`

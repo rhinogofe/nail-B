@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS = {
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
-async function createShopRecord(client, { slug, name, uiSettings = null }) {
+async function createShopRecord(client, { slug, name, uiSettings = null, usageLimitDays = null }) {
   const shopSlug = String(slug || '').trim().toLowerCase()
   const shopName = String(name || '').trim()
 
@@ -39,10 +39,21 @@ async function createShopRecord(client, { slug, name, uiSettings = null }) {
     throw err
   }
 
+  const limitDays = usageLimitDays != null && usageLimitDays !== ''
+    ? Number(usageLimitDays)
+    : null
+  const parsedLimit = limitDays != null && Number.isFinite(limitDays) && limitDays > 0
+    ? Math.min(Math.floor(limitDays), 3650)
+    : null
+
   const created = await client.query(
-    `INSERT INTO shops (slug, name) VALUES ($1, $2)
-     RETURNING id, slug, name, is_active, created_at`,
-    [shopSlug, shopName]
+    parsedLimit
+      ? `INSERT INTO shops (slug, name, usage_limit_days, usage_started_at)
+         VALUES ($1, $2, $3, NOW())
+         RETURNING id, slug, name, is_active, created_at, usage_limit_days, usage_started_at`
+      : `INSERT INTO shops (slug, name) VALUES ($1, $2)
+         RETURNING id, slug, name, is_active, created_at, usage_limit_days, usage_started_at`,
+    parsedLimit ? [shopSlug, shopName, parsedLimit] : [shopSlug, shopName]
   )
   const shop = created.rows[0]
 

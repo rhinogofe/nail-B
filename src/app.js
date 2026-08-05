@@ -3,6 +3,7 @@ require('dotenv').config()
 const express = require('express')
 const cors    = require('cors')
 const { passport } = require('./config/passport')
+const { createCorsOptions } = require('./config/cors')
 const { ensureSchema } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
@@ -12,21 +13,7 @@ const { ensureUploadDirs, getUploadRoot } = require('./utils/uploadPaths')
 
 const app = express()
 
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
-  .split(',')
-  .map((value) => value.trim())
-  .filter(Boolean)
-
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true)
-      return
-    }
-    callback(null, false)
-  },
-  credentials: true,
-}))
+app.use(cors(createCorsOptions()))
 
 app.use('/api/line/webhook', require('./routes/lineWebhook'))
 
@@ -41,7 +28,12 @@ app.use('/api/coupons',  require('./routes/coupons'))
 app.use('/api/reviews',  require('./routes/reviews'))
 app.use('/api/chat',     require('./routes/chat'))
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }))
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    upload_root: getUploadRoot(),
+  })
+})
 
 app.use((err, req, res, next) => {
   console.error(err.stack)
