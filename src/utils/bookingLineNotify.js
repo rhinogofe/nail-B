@@ -9,8 +9,12 @@ const STATUS_LABELS = {
   cancelled: 'ยกเลิก',
 }
 
-function padHour(hour) {
-  return `${Number(hour)}:00`
+function formatHmLabel(hour, minute = 0) {
+  const h = Number(hour)
+  const m = Number(minute ?? 0)
+  if (!Number.isInteger(h) || h < 0 || h > 23) return `${hour}:00`
+  const min = Number.isInteger(m) && m >= 0 && m <= 59 ? m : 0
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`
 }
 
 function formatThaiDate(isoDate) {
@@ -34,7 +38,9 @@ async function loadBookingNotifyContext(poolOrClient, shopId, bookingId) {
         b.id,
         b.booking_date,
         b.start_hour,
+        b.start_minute,
         b.end_hour,
+        b.end_minute,
         b.status,
         u.name AS customer_name,
         u.email AS customer_email,
@@ -63,6 +69,7 @@ async function loadBookingNotifyContext(poolOrClient, shopId, bookingId) {
   const services = optionsRes.rows.map((r) => r.option_name).join(', ') || '-'
   const slotHours = await getBookingSlotHours(poolOrClient, shopId)
   const endHour = row.end_hour ?? bookingEndHour(row.start_hour, slotHours)
+  const endMinute = row.end_minute ?? 0
   const customer = row.customer_name
     || row.customer_phone
     || row.customer_email
@@ -73,8 +80,8 @@ async function loadBookingNotifyContext(poolOrClient, shopId, bookingId) {
     shop: row.shop_name,
     customer,
     date: formatThaiDate(row.booking_date),
-    start: padHour(row.start_hour),
-    end: padHour(endHour),
+    start: formatHmLabel(row.start_hour, row.start_minute),
+    end: formatHmLabel(endHour, endMinute),
     services,
     status: STATUS_LABELS[row.status] || row.status,
   }

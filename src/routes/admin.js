@@ -44,13 +44,17 @@ const { getCouponSettings, setCouponSettings, awardCompletionPoints } = require(
 const { getLinePushSettings, setLinePushSettings, enrichShopsWithLinePush, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
 const { isCentralLineBotEnabled } = require('../utils/lineBotMode')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
-const { notifyAdminNewBookingChat } = require('../utils/bookingChatNotify')
+const { notifyAdminNewBookingChat, notifyBookingCancelledChat, notifyBookingPaidChat } = require('../utils/bookingChatNotify')
 const {
   getChatNotifySettings,
   setChatNotifySettings,
   DEFAULT_NEW_BOOKING_TEMPLATE,
   DEFAULT_UPCOMING_ADMIN_TEMPLATE,
   DEFAULT_UPCOMING_CUSTOMER_TEMPLATE,
+  DEFAULT_CANCEL_ADMIN_TEMPLATE,
+  DEFAULT_CANCEL_CUSTOMER_TEMPLATE,
+  DEFAULT_PAID_ADMIN_TEMPLATE,
+  DEFAULT_PAID_CUSTOMER_TEMPLATE,
 } = require('../utils/chatNotifySettings')
 const {
   getUnpaidExpireSettings,
@@ -692,6 +696,7 @@ router.patch('/bookings/:id/cancel-unpaid', async (req, res) => {
     }
 
     res.json({ success: true, message: 'ยกเลิกคิวที่ยังไม่ชำระเงินแล้ว' })
+    notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -720,6 +725,7 @@ router.patch('/bookings/:id/cancel-paid', async (req, res) => {
       success: true,
       message: 'ยกเลิกคิวชำระแล้วแล้ว ช่วงเวลานี้ว่างให้จองใหม่ได้',
     })
+    notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -1275,12 +1281,24 @@ router.get('/settings/chat-notify', async (req, res) => {
       upcoming_admin_enabled: settings.upcomingAdminEnabled,
       upcoming_customer_enabled: settings.upcomingCustomerEnabled,
       upcoming_minutes: settings.upcomingMinutes,
+      cancel_admin_enabled: settings.cancelAdminEnabled,
+      cancel_customer_enabled: settings.cancelCustomerEnabled,
+      paid_admin_enabled: settings.paidAdminEnabled,
+      paid_customer_enabled: settings.paidCustomerEnabled,
       new_booking_template: settings.newBookingTemplate,
       upcoming_admin_template: settings.upcomingAdminTemplate,
       upcoming_customer_template: settings.upcomingCustomerTemplate,
+      cancel_admin_template: settings.cancelAdminTemplate,
+      cancel_customer_template: settings.cancelCustomerTemplate,
+      paid_admin_template: settings.paidAdminTemplate,
+      paid_customer_template: settings.paidCustomerTemplate,
       default_new_booking_template: DEFAULT_NEW_BOOKING_TEMPLATE,
       default_upcoming_admin_template: DEFAULT_UPCOMING_ADMIN_TEMPLATE,
       default_upcoming_customer_template: DEFAULT_UPCOMING_CUSTOMER_TEMPLATE,
+      default_cancel_admin_template: DEFAULT_CANCEL_ADMIN_TEMPLATE,
+      default_cancel_customer_template: DEFAULT_CANCEL_CUSTOMER_TEMPLATE,
+      default_paid_admin_template: DEFAULT_PAID_ADMIN_TEMPLATE,
+      default_paid_customer_template: DEFAULT_PAID_CUSTOMER_TEMPLATE,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1300,6 +1318,18 @@ router.patch('/settings/chat-notify', async (req, res) => {
     if (typeof req.body?.upcoming_customer_enabled === 'boolean') {
       partial.upcomingCustomerEnabled = req.body.upcoming_customer_enabled
     }
+    if (typeof req.body?.cancel_admin_enabled === 'boolean') {
+      partial.cancelAdminEnabled = req.body.cancel_admin_enabled
+    }
+    if (typeof req.body?.cancel_customer_enabled === 'boolean') {
+      partial.cancelCustomerEnabled = req.body.cancel_customer_enabled
+    }
+    if (typeof req.body?.paid_admin_enabled === 'boolean') {
+      partial.paidAdminEnabled = req.body.paid_admin_enabled
+    }
+    if (typeof req.body?.paid_customer_enabled === 'boolean') {
+      partial.paidCustomerEnabled = req.body.paid_customer_enabled
+    }
     if (req.body?.upcoming_minutes != null) {
       partial.upcomingMinutes = req.body.upcoming_minutes
     }
@@ -1312,6 +1342,18 @@ router.patch('/settings/chat-notify', async (req, res) => {
     if (req.body?.upcoming_customer_template != null) {
       partial.upcomingCustomerTemplate = req.body.upcoming_customer_template
     }
+    if (req.body?.cancel_admin_template != null) {
+      partial.cancelAdminTemplate = req.body.cancel_admin_template
+    }
+    if (req.body?.cancel_customer_template != null) {
+      partial.cancelCustomerTemplate = req.body.cancel_customer_template
+    }
+    if (req.body?.paid_admin_template != null) {
+      partial.paidAdminTemplate = req.body.paid_admin_template
+    }
+    if (req.body?.paid_customer_template != null) {
+      partial.paidCustomerTemplate = req.body.paid_customer_template
+    }
     const settings = await setChatNotifySettings(pool, req.shop.id, partial)
     res.json({
       success: true,
@@ -1319,9 +1361,17 @@ router.patch('/settings/chat-notify', async (req, res) => {
       upcoming_admin_enabled: settings.upcomingAdminEnabled,
       upcoming_customer_enabled: settings.upcomingCustomerEnabled,
       upcoming_minutes: settings.upcomingMinutes,
+      cancel_admin_enabled: settings.cancelAdminEnabled,
+      cancel_customer_enabled: settings.cancelCustomerEnabled,
+      paid_admin_enabled: settings.paidAdminEnabled,
+      paid_customer_enabled: settings.paidCustomerEnabled,
       new_booking_template: settings.newBookingTemplate,
       upcoming_admin_template: settings.upcomingAdminTemplate,
       upcoming_customer_template: settings.upcomingCustomerTemplate,
+      cancel_admin_template: settings.cancelAdminTemplate,
+      cancel_customer_template: settings.cancelCustomerTemplate,
+      paid_admin_template: settings.paidAdminTemplate,
+      paid_customer_template: settings.paidCustomerTemplate,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1595,6 +1645,7 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
         `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND shop_id = $2 AND status = 'awaiting_payment'`,
         [req.params.id, shopId]
       )
+      notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
       return res.status(409).json({ error: 'คิวหมดเวลาชำระแล้ว ถูกยกเลิกอัตโนมัติ' })
     }
 
@@ -1614,6 +1665,7 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
     }
 
     res.json({ success: true, message: 'ยืนยันชำระเงินแล้ว คิวพร้อมให้บริการ' })
+    notifyBookingPaidChat(pool, shopId, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

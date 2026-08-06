@@ -9,7 +9,7 @@ const {
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
-const { notifyAdminNewBookingChat } = require('../utils/bookingChatNotify')
+const { notifyAdminNewBookingChat, notifyBookingCancelledChat } = require('../utils/bookingChatNotify')
 const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
@@ -503,6 +503,7 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบคิว หรือไม่สามารถยกเลิกได้' })
 
     res.json({ success: true })
+    notifyBookingCancelledChat(pool, req.shop.id, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

@@ -151,8 +151,96 @@ async function notifyCustomerUpcomingChat(poolOrClient, shopId, bookingId, minut
   }
 }
 
+async function getBookingCustomerUserId(poolOrClient, shopId, bookingId) {
+  const userRes = await poolOrClient.query(
+    `SELECT user_id FROM bookings WHERE id = $1 AND shop_id = $2`,
+    [bookingId, shopId]
+  )
+  return userRes.rows[0]?.user_id || null
+}
+
+async function notifyBookingCancelledChat(poolOrClient, shopId, bookingId) {
+  try {
+    const settings = await getChatNotifySettings(poolOrClient, shopId)
+    if (!settings.cancelAdminEnabled && !settings.cancelCustomerEnabled) {
+      return { ok: false, skipped: true, reason: 'disabled' }
+    }
+
+    const ctx = await loadBookingNotifyContext(poolOrClient, shopId, bookingId)
+    if (!ctx) return { ok: false, skipped: true, reason: 'booking_not_found' }
+
+    const customerUserId = await getBookingCustomerUserId(poolOrClient, shopId, bookingId)
+    if (!customerUserId) return { ok: false, skipped: true, reason: 'no_customer' }
+
+    const results = {}
+    if (settings.cancelAdminEnabled) {
+      const text = applyTemplate(settings.cancelAdminTemplate, ctx)
+      const row = await insertSystemChatMessage(poolOrClient, {
+        shopId,
+        userId: customerUserId,
+        body: text,
+      })
+      results.admin = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+    }
+    if (settings.cancelCustomerEnabled) {
+      const text = applyTemplate(settings.cancelCustomerTemplate, ctx)
+      const row = await insertAdminChatMessage(poolOrClient, {
+        shopId,
+        userId: customerUserId,
+        body: text,
+      })
+      results.customer = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+    }
+    return { ok: true, results }
+  } catch (err) {
+    console.error('notifyBookingCancelledChat:', err.message)
+    return { ok: false, error: err.message }
+  }
+}
+
+async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
+  try {
+    const settings = await getChatNotifySettings(poolOrClient, shopId)
+    if (!settings.paidAdminEnabled && !settings.paidCustomerEnabled) {
+      return { ok: false, skipped: true, reason: 'disabled' }
+    }
+
+    const ctx = await loadBookingNotifyContext(poolOrClient, shopId, bookingId)
+    if (!ctx) return { ok: false, skipped: true, reason: 'booking_not_found' }
+
+    const customerUserId = await getBookingCustomerUserId(poolOrClient, shopId, bookingId)
+    if (!customerUserId) return { ok: false, skipped: true, reason: 'no_customer' }
+
+    const results = {}
+    if (settings.paidAdminEnabled) {
+      const text = applyTemplate(settings.paidAdminTemplate, ctx)
+      const row = await insertSystemChatMessage(poolOrClient, {
+        shopId,
+        userId: customerUserId,
+        body: text,
+      })
+      results.admin = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+    }
+    if (settings.paidCustomerEnabled) {
+      const text = applyTemplate(settings.paidCustomerTemplate, ctx)
+      const row = await insertAdminChatMessage(poolOrClient, {
+        shopId,
+        userId: customerUserId,
+        body: text,
+      })
+      results.customer = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+    }
+    return { ok: true, results }
+  } catch (err) {
+    console.error('notifyBookingPaidChat:', err.message)
+    return { ok: false, error: err.message }
+  }
+}
+
 module.exports = {
   notifyAdminNewBookingChat,
   notifyAdminUpcomingChat,
   notifyCustomerUpcomingChat,
+  notifyBookingCancelledChat,
+  notifyBookingPaidChat,
 }
