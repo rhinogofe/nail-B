@@ -245,7 +245,7 @@ async function fetchAdminBookingWithOptions(client, shopId, bookingId) {
   if (!result.rows.length) return null
   const optionsResult = await client.query(
     `
-      SELECT n.id, n.option_name
+      SELECT n.id, n.option_name, n.price
       FROM booking_nailoptions bn
       JOIN nailoption n ON n.id = bn.nailoption_id
       WHERE bn.booking_id = $1
@@ -258,6 +258,7 @@ async function fetchAdminBookingWithOptions(client, shopId, bookingId) {
     nail_options: optionsResult.rows.map((o) => ({
       id: o.id,
       option_name: o.option_name,
+      price: o.price != null ? Number(o.price) : null,
     })),
   }
 }
@@ -318,7 +319,7 @@ router.get('/bookings', async (req, res) => {
 
     const optionsResult = await pool.query(
       `
-        SELECT b.id AS booking_id, n.id AS option_id, n.option_name
+        SELECT b.id AS booking_id, n.id AS option_id, n.option_name, n.price
         FROM bookings b
         JOIN booking_nailoptions bn ON bn.booking_id = b.id
         JOIN nailoption n ON n.id = bn.nailoption_id
@@ -334,6 +335,7 @@ router.get('/bookings', async (req, res) => {
       optionsByBookingId[row.booking_id].push({
         id: row.option_id,
         option_name: row.option_name,
+        price: row.price != null ? Number(row.price) : null,
       })
     }
 
