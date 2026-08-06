@@ -4,7 +4,12 @@ const express = require('express')
 const cors    = require('cors')
 const { passport } = require('./config/passport')
 const { createCorsOptions } = require('./config/cors')
-const { ensureSchema, ensureShopUsageColumns, ensureServiceCategoriesSchema } = require('./db/ensureSchema')
+const {
+  ensureSchema,
+  ensureShopUsageColumns,
+  ensureServiceCategoriesSchema,
+  ensureChatNotifySchema,
+} = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 const { processUpcomingBookingReminders } = require('./utils/bookingUpcomingReminders')
@@ -54,6 +59,7 @@ async function startServer() {
     const pool = await getPool()
     await ensureShopUsageColumns(pool)
     await ensureServiceCategoriesSchema(pool)
+    await ensureChatNotifySchema(pool)
   } catch (err) {
     console.error('⚠️ Critical schema migration:', err.message)
   }

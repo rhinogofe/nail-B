@@ -8,6 +8,54 @@ async function ensureShopUsageColumns(pool) {
   await db.query(`ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_started_at TIMESTAMPTZ`)
 }
 
+async function ensureChatNotifySchema(pool) {
+  const db = pool || await getPool()
+  const chatExists = await db.query(`SELECT to_regclass('public.chat_messages') AS reg`)
+  if (!chatExists.rows[0]?.reg) return
+
+  await db.query(`
+    DO $$
+    DECLARE cname text;
+    BEGIN
+      FOR cname IN
+        SELECT con.conname
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE rel.relname = 'chat_messages'
+          AND con.contype = 'c'
+          AND pg_get_constraintdef(con.oid) LIKE '%sender_role%'
+      LOOP
+        EXECUTE format('ALTER TABLE chat_messages DROP CONSTRAINT %I', cname);
+      END LOOP;
+    END $$;
+  `)
+
+  const checkExists = await db.query(`
+    SELECT 1
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    WHERE rel.relname = 'chat_messages'
+      AND con.conname = 'chat_messages_sender_role_check'
+    LIMIT 1
+  `)
+  if (!checkExists.rows.length) {
+    await db.query(`
+      ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_sender_role_check
+        CHECK (sender_role IN ('admin', 'customer', 'system'));
+    `)
+  }
+
+  const bookingsExists = await db.query(`SELECT to_regclass('public.bookings') AS reg`)
+  if (bookingsExists.rows[0]?.reg) {
+    await db.query(`
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_admin_upcoming_sent_at TIMESTAMPTZ;
+    `)
+    await db.query(`
+      ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_customer_upcoming_sent_at TIMESTAMPTZ;
+    `)
+  }
+}
+
 async function ensureServiceCategoriesSchema(pool) {
   const db = pool || await getPool()
   const shopsExists = await db.query(`SELECT to_regclass('public.shops') AS reg`)
@@ -210,11 +258,16 @@ async function ensureSchema() {
       WHERE provider = 'phone'
   `)
 
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_date_hour
-      ON bookings (booking_date, start_hour)
-      WHERE status != 'cancelled';
-  `)
+  // Legacy index — superseded by ux_bookings_active_shop_date_slot; may fail on duplicate rows.
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_date_hour
+        ON bookings (booking_date, start_hour)
+        WHERE status != 'cancelled';
+    `)
+  } catch (err) {
+    console.warn('⚠️ Skip legacy index ux_bookings_active_date_hour:', err.message)
+  }
 
   await pool.query(`DROP INDEX IF EXISTS ux_nailoption_option_name`)
 
@@ -311,21 +364,7 @@ async function ensureSchema() {
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image_url TEXT;
   `)
 
-  await pool.query(`
-    ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_sender_role_check;
-  `)
-  await pool.query(`
-    ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_sender_role_check
-      CHECK (sender_role IN ('admin', 'customer', 'system'));
-  `)
-
-  await pool.query(`
-    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_admin_upcoming_sent_at TIMESTAMPTZ;
-  `)
-  await pool.query(`
-    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_customer_upcoming_sent_at TIMESTAMPTZ;
-  `)
-
+  await ensureChatNotifySchema(pool)
   await ensureShopUsageColumns(pool)
   await ensureServiceCategoriesSchema(pool)
 
@@ -525,4 +564,9 @@ async function ensureSchema() {
   console.log('✅ PostgreSQL schema ready')
 }
 
-module.exports = { ensureSchema, ensureShopUsageColumns, ensureServiceCategoriesSchema }
+module.exports = {
+  ensureSchema,
+  ensureShopUsageColumns,
+  ensureServiceCategoriesSchema,
+  ensureChatNotifySchema,
+}
