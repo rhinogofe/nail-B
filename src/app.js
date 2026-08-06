@@ -7,6 +7,7 @@ const { createCorsOptions } = require('./config/cors')
 const { ensureSchema, ensureShopUsageColumns, ensureServiceCategoriesSchema } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
+const { processUpcomingBookingReminders } = require('./utils/bookingUpcomingReminders')
 const { expireOldChatImages } = require('./utils/chatImages')
 const { logLineBotTokenStatus } = require('./utils/linePushSettings')
 const { ensureUploadDirs, getUploadRoot } = require('./utils/uploadPaths')
@@ -78,6 +79,21 @@ async function startServer() {
       console.error('expireUnpaidBookings:', err.message)
     }
   }, 5 * 60 * 1000)
+
+  async function runUpcomingReminders() {
+    try {
+      const pool = getPool()
+      const { sentAdmin, sentCustomer } = await processUpcomingBookingReminders(pool)
+      if (sentAdmin > 0 || sentCustomer > 0) {
+        console.log(`🔔 Sent upcoming reminders — admin: ${sentAdmin}, customer: ${sentCustomer}`)
+      }
+    } catch (err) {
+      console.error('processUpcomingBookingReminders:', err.message)
+    }
+  }
+
+  runUpcomingReminders()
+  setInterval(runUpcomingReminders, 5 * 60 * 1000)
 
   async function runChatImageCleanup() {
     try {

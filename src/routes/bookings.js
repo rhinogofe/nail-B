@@ -9,6 +9,7 @@ const {
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
+const { notifyAdminNewBookingChat } = require('../utils/bookingChatNotify')
 const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
@@ -379,6 +380,7 @@ router.post('/', auth, async (req, res) => {
     const bookingId = result.rows[0].id
     res.status(201).json({ success: true, booking: result.rows[0] })
     notifyShopNewBooking(pool, shopId, bookingId).catch(() => null)
+    notifyAdminNewBookingChat(pool, shopId, bookingId).catch(() => null)
   } catch (err) {
     if (err.code === '23505') {
       return res.status(409).json({ error: 'เวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น' })

@@ -311,6 +311,21 @@ async function ensureSchema() {
     ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS image_url TEXT;
   `)
 
+  await pool.query(`
+    ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_sender_role_check;
+  `)
+  await pool.query(`
+    ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_sender_role_check
+      CHECK (sender_role IN ('admin', 'customer', 'system'));
+  `)
+
+  await pool.query(`
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_admin_upcoming_sent_at TIMESTAMPTZ;
+  `)
+  await pool.query(`
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_customer_upcoming_sent_at TIMESTAMPTZ;
+  `)
+
   await ensureShopUsageColumns(pool)
   await ensureServiceCategoriesSchema(pool)
 

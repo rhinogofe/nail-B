@@ -44,6 +44,14 @@ const { getCouponSettings, setCouponSettings, awardCompletionPoints } = require(
 const { getLinePushSettings, setLinePushSettings, enrichShopsWithLinePush, DEFAULT_TEMPLATE: LINE_NOTIFY_DEFAULT_TEMPLATE } = require('../utils/linePushSettings')
 const { isCentralLineBotEnabled } = require('../utils/lineBotMode')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
+const { notifyAdminNewBookingChat } = require('../utils/bookingChatNotify')
+const {
+  getChatNotifySettings,
+  setChatNotifySettings,
+  DEFAULT_NEW_BOOKING_TEMPLATE,
+  DEFAULT_UPCOMING_ADMIN_TEMPLATE,
+  DEFAULT_UPCOMING_CUSTOMER_TEMPLATE,
+} = require('../utils/chatNotifySettings')
 const {
   getUnpaidExpireSettings,
   isBookingExpired,
@@ -607,6 +615,9 @@ router.post('/bookings', async (req, res) => {
       booking: booking.booking,
     })
     notifyShopNewBooking(getPool(), shopId, booking.booking.id).catch(() => null)
+    if (status !== 'done') {
+      notifyAdminNewBookingChat(getPool(), shopId, booking.booking.id).catch(() => null)
+    }
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     if (err.code === '23505') {
@@ -1250,6 +1261,68 @@ router.post('/settings/line-push/test', async (req, res) => {
       })
     }
     res.json({ success: true, message: 'ส่งข้อความทดสอบแล้ว' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/settings/chat-notify', async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getChatNotifySettings(pool, req.shop.id)
+    res.json({
+      new_booking_enabled: settings.newBookingEnabled,
+      upcoming_admin_enabled: settings.upcomingAdminEnabled,
+      upcoming_customer_enabled: settings.upcomingCustomerEnabled,
+      upcoming_minutes: settings.upcomingMinutes,
+      new_booking_template: settings.newBookingTemplate,
+      upcoming_admin_template: settings.upcomingAdminTemplate,
+      upcoming_customer_template: settings.upcomingCustomerTemplate,
+      default_new_booking_template: DEFAULT_NEW_BOOKING_TEMPLATE,
+      default_upcoming_admin_template: DEFAULT_UPCOMING_ADMIN_TEMPLATE,
+      default_upcoming_customer_template: DEFAULT_UPCOMING_CUSTOMER_TEMPLATE,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/chat-notify', async (req, res) => {
+  try {
+    const pool = getPool()
+    const partial = {}
+    if (typeof req.body?.new_booking_enabled === 'boolean') {
+      partial.newBookingEnabled = req.body.new_booking_enabled
+    }
+    if (typeof req.body?.upcoming_admin_enabled === 'boolean') {
+      partial.upcomingAdminEnabled = req.body.upcoming_admin_enabled
+    }
+    if (typeof req.body?.upcoming_customer_enabled === 'boolean') {
+      partial.upcomingCustomerEnabled = req.body.upcoming_customer_enabled
+    }
+    if (req.body?.upcoming_minutes != null) {
+      partial.upcomingMinutes = req.body.upcoming_minutes
+    }
+    if (req.body?.new_booking_template != null) {
+      partial.newBookingTemplate = req.body.new_booking_template
+    }
+    if (req.body?.upcoming_admin_template != null) {
+      partial.upcomingAdminTemplate = req.body.upcoming_admin_template
+    }
+    if (req.body?.upcoming_customer_template != null) {
+      partial.upcomingCustomerTemplate = req.body.upcoming_customer_template
+    }
+    const settings = await setChatNotifySettings(pool, req.shop.id, partial)
+    res.json({
+      success: true,
+      new_booking_enabled: settings.newBookingEnabled,
+      upcoming_admin_enabled: settings.upcomingAdminEnabled,
+      upcoming_customer_enabled: settings.upcomingCustomerEnabled,
+      upcoming_minutes: settings.upcomingMinutes,
+      new_booking_template: settings.newBookingTemplate,
+      upcoming_admin_template: settings.upcomingAdminTemplate,
+      upcoming_customer_template: settings.upcomingCustomerTemplate,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -3067,12 +3140,17 @@ router.get('/chat/notifications', async (req, res) => {
           cm.user_id,
           cm.body,
           cm.image_url,
+          cm.sender_role,
           cm.created_at,
-          u.name AS user_name
+          u.name AS user_name,
+          CASE
+            WHEN cm.sender_role = 'system' THEN 'แจ้งเตือนคิว'
+            ELSE u.name
+          END AS notification_title
         FROM chat_messages cm
         JOIN users u ON u.id = cm.user_id
         WHERE cm.shop_id = $1
-          AND cm.sender_role = 'customer'
+          AND cm.sender_role IN ('customer', 'system')
           ${branchFilter}
           ${timeFilter}
         ORDER BY cm.created_at ASC
