@@ -99,7 +99,7 @@ async function startServer() {
   }
 
   runUpcomingReminders()
-  setInterval(runUpcomingReminders, 5 * 60 * 1000)
+  setInterval(runUpcomingReminders, 60 * 1000)
 
   async function runChatImageCleanup() {
     try {
