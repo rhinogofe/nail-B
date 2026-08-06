@@ -80,7 +80,7 @@ async function getChatNotifySettings(poolOrClient, shopId) {
     upcomingMinutes: parseMinutes(map.chat_notify_upcoming_minutes),
     cancelAdminEnabled: parseEnabled(map.chat_notify_cancel_admin_enabled),
     cancelCustomerEnabled: parseEnabled(map.chat_notify_cancel_customer_enabled),
-    paidAdminEnabled: parseEnabled(map.chat_notify_paid_admin_enabled),
+    paidAdminEnabled: parseEnabled(map.chat_notify_paid_admin_enabled, false),
     paidCustomerEnabled: parseEnabled(map.chat_notify_paid_customer_enabled),
     newBookingTemplate: map.chat_notify_new_booking_template || DEFAULT_NEW_BOOKING_TEMPLATE,
     upcomingAdminTemplate: map.chat_notify_upcoming_admin_template || DEFAULT_UPCOMING_ADMIN_TEMPLATE,

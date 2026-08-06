@@ -33,6 +33,7 @@ router.get('/messages', async (req, res) => {
         SELECT ${MESSAGE_FIELDS}
         FROM chat_messages
         WHERE shop_id = $1 AND user_id = $2
+          AND sender_role != 'system'
         ORDER BY created_at ASC
         LIMIT 500
       `,

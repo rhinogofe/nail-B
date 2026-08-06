@@ -1,6 +1,7 @@
 const { loadBookingNotifyContext, applyTemplate } = require('./bookingLineNotify')
 const { getChatNotifySettings } = require('./chatNotifySettings')
 const { createChatMessage } = require('./chatMessages')
+const { ensureSystemChatUser } = require('./systemChatUser')
 
 async function getShopAdminSenderId(poolOrClient, shopId) {
   const shopAdmin = await poolOrClient.query(
@@ -26,14 +27,16 @@ async function getShopAdminSenderId(poolOrClient, shopId) {
   return fallback.rows[0]?.id || null
 }
 
-async function insertSystemChatMessage(poolOrClient, { shopId, userId, body }) {
+async function insertSystemChatMessage(poolOrClient, { shopId, relatedUserId, body }) {
   const text = String(body || '').trim()
   if (!text) return null
+  const systemUserId = await ensureSystemChatUser(poolOrClient, shopId)
   return createChatMessage(poolOrClient, {
     shopId,
-    userId,
+    userId: systemUserId,
     senderRole: 'system',
-    senderId: userId,
+    senderId: systemUserId,
+    relatedUserId,
     body: text,
   })
 }
@@ -72,7 +75,7 @@ async function notifyAdminNewBookingChat(poolOrClient, shopId, bookingId) {
     const text = applyTemplate(settings.newBookingTemplate, ctx)
     const row = await insertSystemChatMessage(poolOrClient, {
       shopId,
-      userId: customerUserId,
+      relatedUserId: customerUserId,
       body: text,
     })
     if (!row) return { ok: false, skipped: true, reason: 'empty_message' }
@@ -106,7 +109,7 @@ async function notifyAdminUpcomingChat(poolOrClient, shopId, bookingId, minutesU
     })
     const row = await insertSystemChatMessage(poolOrClient, {
       shopId,
-      userId: customerUserId,
+      relatedUserId: customerUserId,
       body: text,
     })
     if (!row) return { ok: false, skipped: true, reason: 'empty_message' }
@@ -177,7 +180,7 @@ async function notifyBookingCancelledChat(poolOrClient, shopId, bookingId) {
       const text = applyTemplate(settings.cancelAdminTemplate, ctx)
       const row = await insertSystemChatMessage(poolOrClient, {
         shopId,
-        userId: customerUserId,
+        relatedUserId: customerUserId,
         body: text,
       })
       results.admin = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
@@ -216,7 +219,7 @@ async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
       const text = applyTemplate(settings.paidAdminTemplate, ctx)
       const row = await insertSystemChatMessage(poolOrClient, {
         shopId,
-        userId: customerUserId,
+        relatedUserId: customerUserId,
         body: text,
       })
       results.admin = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }

@@ -69,6 +69,12 @@ const {
 } = require('../utils/shopAdmins')
 const { requireChatUserAccess } = require('../utils/chatAccess')
 const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
+const {
+  ensureSystemChatUser,
+  isSystemChatUser,
+  SYSTEM_USER_NAME,
+  SYSTEM_USER_EMAIL,
+} = require('../utils/systemChatUser')
 const { deleteChatImagesForConversation } = require('../utils/chatImages')
 const {
   getRegisterShopPin,
@@ -3079,6 +3085,7 @@ router.get('/chat/conversations', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const systemUserId = await ensureSystemChatUser(pool, shopId)
     const branchScoped = req.shop.slug !== 'default'
     const scopeFilter = branchScoped
       ? `AND (
@@ -3094,6 +3101,7 @@ router.get('/chat/conversations', async (req, res) => {
           u.name,
           u.email,
           u.avatar_url,
+          false AS is_system,
           CASE
             WHEN last.image_url IS NOT NULL AND COALESCE(TRIM(last.body), '') = '' THEN '[รูปภาพ]'
             ELSE COALESCE(last.body, '')
@@ -3107,6 +3115,8 @@ router.get('/chat/conversations', async (req, res) => {
             user_id, body, image_url, sender_role, created_at
           FROM chat_messages cm
           WHERE shop_id = $1
+            AND user_id != $2
+            AND sender_role != 'system'
           ${scopeFilter}
           ORDER BY user_id, created_at DESC
         ) last
@@ -3119,9 +3129,43 @@ router.get('/chat/conversations', async (req, res) => {
         ) unread ON unread.user_id = u.id
         ORDER BY last.created_at DESC
       `,
-      [shopId]
+      [shopId, systemUserId]
     )
-    res.json(result.rows)
+
+    const systemLast = await pool.query(
+      `
+        SELECT body, image_url, sender_role, created_at
+        FROM chat_messages
+        WHERE shop_id = $1 AND user_id = $2 AND sender_role = 'system'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [shopId, systemUserId]
+    )
+    const systemUnread = await pool.query(
+      `
+        SELECT COUNT(*)::int AS count
+        FROM chat_messages
+        WHERE shop_id = $1 AND user_id = $2 AND sender_role = 'system' AND read_at IS NULL
+      `,
+      [shopId, systemUserId]
+    )
+    const last = systemLast.rows[0]
+    const systemConv = {
+      id: systemUserId,
+      name: SYSTEM_USER_NAME,
+      email: SYSTEM_USER_EMAIL,
+      avatar_url: null,
+      is_system: true,
+      last_message: last?.body
+        || (last?.image_url ? '[รูปภาพ]' : ''),
+      last_image_url: last?.image_url || null,
+      last_sender_role: last?.sender_role || 'system',
+      last_message_at: last?.created_at || null,
+      unread_count: systemUnread.rows[0]?.count || 0,
+    }
+
+    res.json([systemConv, ...result.rows])
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -3170,8 +3214,9 @@ router.get('/chat/notifications', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const systemUserId = await ensureSystemChatUser(pool, shopId)
     const branchScoped = req.shop.slug !== 'default'
-    const params = [shopId]
+    const params = [shopId, systemUserId]
     let timeFilter = ''
     if (afterDate) {
       params.push(afterDate.toISOString())
@@ -3193,17 +3238,24 @@ router.get('/chat/notifications', async (req, res) => {
           cm.body,
           cm.image_url,
           cm.sender_role,
+          cm.related_user_id,
           cm.created_at,
           u.name AS user_name,
+          ru.name AS related_user_name,
           CASE
+            WHEN cm.user_id = $2 AND cm.sender_role = 'system' THEN 'ระบบ'
             WHEN cm.sender_role = 'system' THEN 'แจ้งเตือนคิว'
             ELSE u.name
-          END AS notification_title
+          END AS notification_title,
+          (cm.user_id = $2 AND cm.sender_role = 'system') AS is_system_thread
         FROM chat_messages cm
         JOIN users u ON u.id = cm.user_id
+        LEFT JOIN users ru ON ru.id = cm.related_user_id
         WHERE cm.shop_id = $1
-          AND cm.sender_role IN ('customer', 'system')
-          ${branchFilter}
+          AND (
+            (cm.sender_role = 'customer' ${branchFilter})
+            OR (cm.user_id = $2 AND cm.sender_role = 'system')
+          )
           ${timeFilter}
         ORDER BY cm.created_at ASC
         LIMIT 20
@@ -3224,6 +3276,43 @@ router.get('/chat/conversations/:userId/messages', async (req, res) => {
 
     await requireChatUserAccess(pool, req.shop, userId)
 
+    const systemThread = await isSystemChatUser(pool, shopId, userId)
+
+    if (systemThread) {
+      const messagesRes = await pool.query(
+        `
+          SELECT
+            cm.id, cm.body, cm.image_url, cm.sender_role, cm.sender_id,
+            cm.related_user_id, cm.read_at, cm.created_at,
+            ru.name AS related_user_name
+          FROM chat_messages cm
+          LEFT JOIN users ru ON ru.id = cm.related_user_id
+          WHERE cm.shop_id = $1 AND cm.user_id = $2
+          ORDER BY cm.created_at ASC
+          LIMIT 500
+        `,
+        [shopId, userId]
+      )
+      await pool.query(
+        `
+          UPDATE chat_messages
+          SET read_at = NOW()
+          WHERE shop_id = $1 AND user_id = $2 AND sender_role = 'system' AND read_at IS NULL
+        `,
+        [shopId, userId]
+      )
+      return res.json({
+        user: {
+          id: userId,
+          name: SYSTEM_USER_NAME,
+          email: SYSTEM_USER_EMAIL,
+          avatar_url: null,
+          is_system: true,
+        },
+        messages: messagesRes.rows,
+      })
+    }
+
     const userRes = await pool.query(
       `SELECT id, name, email, avatar_url FROM users WHERE id = $1`,
       [userId]
@@ -3237,6 +3326,7 @@ router.get('/chat/conversations/:userId/messages', async (req, res) => {
         SELECT ${MESSAGE_FIELDS}
         FROM chat_messages
         WHERE shop_id = $1 AND user_id = $2
+          AND sender_role != 'system'
         ORDER BY created_at ASC
         LIMIT 500
       `,
@@ -3268,6 +3358,10 @@ router.post('/chat/conversations/:userId/messages', async (req, res) => {
     const shopId = req.shop.id
     const userId = req.params.userId
 
+    if (await isSystemChatUser(pool, shopId, userId)) {
+      return res.status(403).json({ error: 'ไม่สามารถส่งข้อความในแชทระบบได้' })
+    }
+
     await requireChatUserAccess(pool, req.shop, userId)
 
     const userRes = await pool.query(`SELECT id FROM users WHERE id = $1`, [userId])
@@ -3296,6 +3390,10 @@ router.delete('/chat/conversations/:userId', async (req, res) => {
     const pool = getPool()
     const shopId = req.shop.id
     const userId = req.params.userId
+
+    if (await isSystemChatUser(pool, shopId, userId)) {
+      return res.status(403).json({ error: 'ไม่สามารถลบแชทระบบได้' })
+    }
 
     await requireChatUserAccess(pool, req.shop, userId)
 

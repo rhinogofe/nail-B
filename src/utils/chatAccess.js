@@ -1,5 +1,7 @@
 async function assertChatUserAccess(poolOrClient, shop, userId) {
   if (shop.slug === 'default') return true
+  const { isSystemChatUser } = require('./systemChatUser')
+  if (await isSystemChatUser(poolOrClient, shop.id, userId)) return true
   const result = await poolOrClient.query(
     `
       SELECT 1 FROM bookings WHERE shop_id = $1 AND user_id = $2

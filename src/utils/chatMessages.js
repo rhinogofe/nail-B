@@ -9,6 +9,7 @@ async function createChatMessage(pool, {
   body,
   imageData,
   imageMime,
+  relatedUserId,
 }) {
   const text = normalizeChatBody(body)
   let imageUrl = null
@@ -34,11 +35,11 @@ async function createChatMessage(pool, {
   try {
     const result = await pool.query(
       `
-        INSERT INTO chat_messages (shop_id, user_id, sender_role, sender_id, body, image_url)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, body, image_url, sender_role, sender_id, read_at, created_at
+        INSERT INTO chat_messages (shop_id, user_id, sender_role, sender_id, body, image_url, related_user_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, body, image_url, sender_role, sender_id, related_user_id, read_at, created_at
       `,
-      [shopId, userId, senderRole, senderId, text, imageUrl]
+      [shopId, userId, senderRole, senderId, text, imageUrl, relatedUserId || null]
     )
     return result.rows[0]
   } catch (err) {
@@ -49,7 +50,7 @@ async function createChatMessage(pool, {
   }
 }
 
-const MESSAGE_FIELDS = 'id, body, image_url, sender_role, sender_id, read_at, created_at'
+const MESSAGE_FIELDS = 'id, body, image_url, sender_role, sender_id, related_user_id, read_at, created_at'
 
 module.exports = {
   createChatMessage,

@@ -54,6 +54,37 @@ async function ensureChatNotifySchema(pool) {
       ALTER TABLE bookings ADD COLUMN IF NOT EXISTS chat_customer_upcoming_sent_at TIMESTAMPTZ;
     `)
   }
+
+  await db.query(`
+    ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS related_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+  `)
+
+  await db.query(`
+    DO $$
+    DECLARE cname text;
+    BEGIN
+      SELECT c.conname INTO cname
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      WHERE t.relname = 'users'
+        AND c.contype = 'c'
+        AND pg_get_constraintdef(c.oid) LIKE '%provider%'
+      LIMIT 1;
+      IF cname IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', cname);
+      END IF;
+    END $$;
+  `)
+  await db.query(`
+    ALTER TABLE users ADD CONSTRAINT users_provider_check
+      CHECK (provider IN ('google', 'facebook', 'line', 'phone', 'system'));
+  `)
+
+  const shops = await db.query(`SELECT id FROM shops`)
+  const { ensureSystemChatUser } = require('../utils/systemChatUser')
+  for (const shop of shops.rows) {
+    await ensureSystemChatUser(db, shop.id)
+  }
 }
 
 async function ensureServiceCategoriesSchema(pool) {
