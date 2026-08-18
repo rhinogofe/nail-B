@@ -9,15 +9,7 @@ const STATUS_LABELS = {
   cancelled: 'ยกเลิก',
 }
 
-function formatHmLabel(hour, minute = 0) {
-  const h = Number(hour)
-  const m = Number(minute ?? 0)
-  if (!Number.isInteger(h) || h < 0 || h > 23) return `${hour}:00`
-  const min = Number.isInteger(m) && m >= 0 && m <= 59 ? m : 0
-  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`
-}
-
-function formatThaiDate(isoDate) {
+const { formatHmLabel } = require('./clockLabel')
   if (!isoDate) return '-'
   const [y, m, d] = String(isoDate).split('-').map(Number)
   if (!y || !m || !d) return String(isoDate)
