@@ -46,6 +46,8 @@ function buildNotificationPayload({ title, body, url, data = {} }) {
     url: absoluteUrl,
   }
   const messageId = payloadData.messageId || payloadData.message_id || ''
+  const origin = getFrontendOrigin()
+  const iconUrl = origin ? `${origin}/favicon.svg` : '/favicon.svg'
   return {
     notification: {
       title: safeTitle,
@@ -55,10 +57,14 @@ function buildNotificationPayload({ title, body, url, data = {} }) {
       Object.entries(payloadData).map(([key, value]) => [key, String(value ?? '')])
     ),
     webpush: {
+      headers: {
+        Urgency: 'high',
+        TTL: '86400',
+      },
       notification: {
         title: safeTitle,
         body: safeBody,
-        icon: '/favicon.svg',
+        icon: iconUrl,
         tag: messageId ? `nail-msg-${messageId}` : undefined,
       },
       fcmOptions: {
