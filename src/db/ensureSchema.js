@@ -427,19 +427,6 @@ async function ensureSchema() {
   }
 
   await pool.query(`
-    INSERT INTO service_locations (shop_id, name, color, description, sort_order)
-    SELECT $1, v.name, v.color, v.description, v.sort_order
-    FROM (VALUES
-      ('จุฬา', '#3b82f6', 'สถานที่ให้บริการ จุฬา', 1),
-      ('เกษตร', '#22c55e', 'สถานที่ให้บริการ เกษตร', 2)
-    ) AS v(name, color, description, sort_order)
-    WHERE NOT EXISTS (
-      SELECT 1 FROM service_locations sl
-      WHERE sl.shop_id = $1 AND sl.name = v.name
-    )
-  `, [defaultShopId])
-
-  await pool.query(`
     INSERT INTO shop_settings (shop_id, setting_key, setting_value)
     SELECT $1, setting_key, setting_value
     FROM app_settings

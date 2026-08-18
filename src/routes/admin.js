@@ -3024,8 +3024,8 @@ router.post('/nailoptions', async (req, res) => {
   if (!Number.isFinite(price) || price < 0) {
     return res.status(400).json({ error: 'ราคาไม่ถูกต้อง' })
   }
-  if (!Number.isFinite(duration_min) || duration_min <= 0) {
-    return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องมากกว่า 0' })
+  if (!Number.isFinite(duration_min) || duration_min < 0) {
+    return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องไม่ติดลบ' })
   }
   if (showFromParsed?.error) return res.status(400).json({ error: showFromParsed.error })
   if (showToParsed?.error) return res.status(400).json({ error: showToParsed.error })
@@ -3076,8 +3076,8 @@ router.patch('/nailoptions/:id', async (req, res) => {
   if (!Number.isFinite(price) || price < 0) {
     return res.status(400).json({ error: 'ราคาไม่ถูกต้อง' })
   }
-  if (!Number.isFinite(duration_min) || duration_min <= 0) {
-    return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องมากกว่า 0' })
+  if (!Number.isFinite(duration_min) || duration_min < 0) {
+    return res.status(400).json({ error: 'ระยะเวลา (นาที) ต้องไม่ติดลบ' })
   }
   if (showFromParsed?.error) return res.status(400).json({ error: showFromParsed.error })
   if (showToParsed?.error) return res.status(400).json({ error: showToParsed.error })

@@ -68,15 +68,6 @@ async function createShopRecord(client, { slug, name, uiSettings = null, usageLi
     await setUiSettings(client, shop.id, uiSettings)
   }
 
-  await client.query(
-    `INSERT INTO service_locations (shop_id, name, color, description, sort_order)
-     VALUES
-       ($1, 'จุฬา', '#3b82f6', 'สถานที่ให้บริการ จุฬา', 1),
-       ($1, 'เกษตร', '#22c55e', 'สถานที่ให้บริการ เกษตร', 2)
-     ON CONFLICT DO NOTHING`,
-    [shop.id]
-  )
-
   return shop
 }
 
