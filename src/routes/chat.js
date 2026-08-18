@@ -3,7 +3,7 @@ const auth = require('../middleware/authMiddleware')
 const resolveShop = require('../middleware/resolveShop')
 const { getPool } = require('../db/pool')
 const { canManageShop } = require('../utils/shopAdmins')
-const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
+const { createChatMessage, buildLatestMessagesQuery } = require('../utils/chatMessages')
 const { readChatImageFile, getChatImageCacheMaxAge, MIME_EXT } = require('../utils/chatImages')
 
 router.use(resolveShop)
@@ -29,14 +29,9 @@ router.get('/messages', async (req, res) => {
   try {
     const pool = getPool()
     const result = await pool.query(
-      `
-        SELECT ${MESSAGE_FIELDS}
-        FROM chat_messages
-        WHERE shop_id = $1 AND user_id = $2
-          AND sender_role != 'system'
-        ORDER BY created_at ASC
-        LIMIT 500
-      `,
+      buildLatestMessagesQuery({
+        whereClause: `shop_id = $1 AND user_id = $2 AND sender_role != 'system'`,
+      }),
       [req.shop.id, req.user.id]
     )
     await pool.query(

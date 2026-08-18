@@ -50,9 +50,33 @@ async function createChatMessage(pool, {
   }
 }
 
+const CHAT_MESSAGE_LOAD_LIMIT = 500
+
 const MESSAGE_FIELDS = 'id, body, image_url, sender_role, sender_id, related_user_id, read_at, created_at'
+
+const MESSAGE_FIELDS_CM = `cm.id, cm.body, cm.image_url, cm.sender_role, cm.sender_id, cm.related_user_id, cm.read_at, cm.created_at`
+
+/** Latest N messages for a thread, returned oldest-first for display. */
+function buildLatestMessagesQuery({ whereClause, extraSelect = '', extraJoin = '' }) {
+  const selectExtra = extraSelect ? `, ${extraSelect}` : ''
+  return `
+    SELECT ${MESSAGE_FIELDS_CM}${selectExtra}
+    FROM (
+      SELECT id
+      FROM chat_messages
+      WHERE ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ${CHAT_MESSAGE_LOAD_LIMIT}
+    ) recent
+    INNER JOIN chat_messages cm ON cm.id = recent.id
+    ${extraJoin}
+    ORDER BY cm.created_at ASC
+  `
+}
 
 module.exports = {
   createChatMessage,
+  CHAT_MESSAGE_LOAD_LIMIT,
   MESSAGE_FIELDS,
+  buildLatestMessagesQuery,
 }

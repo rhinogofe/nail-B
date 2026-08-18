@@ -76,7 +76,7 @@ const {
 } = require('../utils/shopAdmins')
 const { requireChatUserAccess } = require('../utils/chatAccess')
 const { emitBookingChanged, subscribeBookingEvents } = require('../utils/bookingEvents')
-const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
+const { createChatMessage, buildLatestMessagesQuery } = require('../utils/chatMessages')
 const {
   ensureSystemChatUser,
   isSystemChatUser,
@@ -3795,17 +3795,11 @@ router.get('/chat/conversations/:userId/messages', async (req, res) => {
 
     if (systemThread) {
       const messagesRes = await pool.query(
-        `
-          SELECT
-            cm.id, cm.body, cm.image_url, cm.sender_role, cm.sender_id,
-            cm.related_user_id, cm.read_at, cm.created_at,
-            ru.name AS related_user_name
-          FROM chat_messages cm
-          LEFT JOIN users ru ON ru.id = cm.related_user_id
-          WHERE cm.shop_id = $1 AND cm.user_id = $2
-          ORDER BY cm.created_at ASC
-          LIMIT 500
-        `,
+        buildLatestMessagesQuery({
+          whereClause: `shop_id = $1 AND user_id = $2`,
+          extraSelect: 'ru.name AS related_user_name',
+          extraJoin: 'LEFT JOIN users ru ON ru.id = cm.related_user_id',
+        }),
         [shopId, userId]
       )
       await pool.query(
@@ -3837,14 +3831,9 @@ router.get('/chat/conversations/:userId/messages', async (req, res) => {
     }
 
     const messagesRes = await pool.query(
-      `
-        SELECT ${MESSAGE_FIELDS}
-        FROM chat_messages
-        WHERE shop_id = $1 AND user_id = $2
-          AND sender_role != 'system'
-        ORDER BY created_at ASC
-        LIMIT 500
-      `,
+      buildLatestMessagesQuery({
+        whereClause: `shop_id = $1 AND user_id = $2 AND sender_role != 'system'`,
+      }),
       [shopId, userId]
     )
 
