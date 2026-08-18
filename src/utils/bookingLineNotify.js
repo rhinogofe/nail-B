@@ -10,6 +10,8 @@ const STATUS_LABELS = {
 }
 
 const { formatHmLabel } = require('./clockLabel')
+
+function formatThaiDate(isoDate) {
   if (!isoDate) return '-'
   const [y, m, d] = String(isoDate).split('-').map(Number)
   if (!y || !m || !d) return String(isoDate)
