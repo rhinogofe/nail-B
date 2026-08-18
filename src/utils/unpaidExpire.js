@@ -1,5 +1,6 @@
 const { getShopSettings } = require('./shopSettings')
 const { notifyBookingCancelledChat } = require('./bookingChatNotify')
+const { emitBookingChanged } = require('./bookingEvents')
 
 const DEFAULT_HOURS = 24
 const MIN_HOURS = 1
@@ -41,12 +42,17 @@ async function expireUnpaidBookings(poolOrClient, shopId = null) {
         WHERE shop_id = $1
           AND status = 'awaiting_payment'
           AND created_at < NOW() - ($2::int * INTERVAL '1 hour')
-        RETURNING id, shop_id
+        RETURNING id, shop_id, booking_date
       `,
       [shopId, expireHours]
     )
     for (const row of result.rows) {
       notifyBookingCancelledChat(poolOrClient, row.shop_id, row.id).catch(() => null)
+      emitBookingChanged(row.shop_id, {
+        type: 'auto_cancelled',
+        booking_id: row.id,
+        booking_date: row.booking_date,
+      })
     }
     return result.rowCount || 0
   }

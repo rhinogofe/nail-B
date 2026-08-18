@@ -8,8 +8,10 @@ const {
   validateOptionIds,
   validateRequiredOptions,
 } = require('../utils/bookingOptions')
+const { finalizeBookingSlotWithServices } = require('../utils/bookingServiceDuration')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { notifyAdminNewBookingChat, notifyBookingCancelledChat } = require('../utils/bookingChatNotify')
+const { emitBookingChanged } = require('../utils/bookingEvents')
 const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
@@ -59,10 +61,14 @@ router.get('/shop-hours', auth, async (req, res) => {
   try {
     const pool = getPool()
     const hours = await getShopHours(pool, req.shop.id)
+    const { getExtendBookingSettings } = require('../utils/extendBookingSettings')
+    const extendSettings = await getExtendBookingSettings(pool, req.shop.id)
     res.json({
       open_hour: hours.openHour,
       last_booking_hour: hours.lastBookingHour,
       slot_hours: hours.slotHours,
+      extend_booking_by_services: extendSettings.enabled,
+      extend_booking_past_close: extendSettings.pastCloseEnabled,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -306,9 +312,6 @@ router.post('/', auth, async (req, res) => {
     const slotError = await validateBookingSlot(pool, shopId, booking_date, req.body, slotHours)
     if (slotError) return res.status(400).json({ error: slotError })
 
-    const slot = normalizeSlotInput(req.body, slotHours)
-    if (!slot) return res.status(400).json({ error: 'ช่วงเวลาไม่ถูกต้อง' })
-
     const uniqueOptionIds = [...new Set(option_ids.map(String))]
     const isValidOptions = await validateOptionIds(pool, shopId, uniqueOptionIds, booking_date)
     if (!isValidOptions) {
@@ -319,6 +322,16 @@ router.post('/', auth, async (req, res) => {
     if (requiredError) {
       return res.status(400).json({ error: requiredError })
     }
+
+    const finalized = await finalizeBookingSlotWithServices(
+      pool,
+      shopId,
+      booking_date,
+      req.body,
+      uniqueOptionIds
+    )
+    if (finalized.error) return res.status(400).json({ error: finalized.error })
+    const slot = finalized.slot
 
     const overlap = await pool.query(
       `
@@ -379,6 +392,7 @@ router.post('/', auth, async (req, res) => {
     await syncBookingOptions(pool, result.rows[0].id, uniqueOptionIds)
     const bookingId = result.rows[0].id
     res.status(201).json({ success: true, booking: result.rows[0] })
+    emitBookingChanged(shopId, { type: 'created', booking_id: bookingId, booking_date })
     notifyShopNewBooking(pool, shopId, bookingId).catch(() => null)
     notifyAdminNewBookingChat(pool, shopId, bookingId).catch(() => null)
   } catch (err) {
@@ -495,6 +509,7 @@ router.delete('/:id', auth, async (req, res) => {
           AND shop_id = $2
           AND user_id = $3
           AND status = 'awaiting_payment'
+        RETURNING id, booking_date
       `,
       [req.params.id, req.shop.id, req.user.id]
     )
@@ -503,6 +518,12 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบคิว หรือไม่สามารถยกเลิกได้' })
 
     res.json({ success: true })
+    const row = result.rows[0]
+    emitBookingChanged(req.shop.id, {
+      type: 'cancelled',
+      booking_id: row.id,
+      booking_date: row.booking_date,
+    })
     notifyBookingCancelledChat(pool, req.shop.id, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })

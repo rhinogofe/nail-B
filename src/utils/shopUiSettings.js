@@ -44,6 +44,10 @@ const UI_DEFAULTS = {
   ui_date_nav_hint: 'ลากเลื่อนหรือกด … เพื่อดูวันถัดไป',
   ui_no_open_days: 'ไม่มีวันเปิดรับคิวในช่วงที่เปิดจอง',
   ui_slot_taken_error: 'เวลานี้เพิ่งถูกจองแล้ว กรุณาเลือกช่วงเวลาอื่น',
+  ui_extend_blocked_next_booking:
+    'เวลารวมบริการของท่านยาวกว่าเวลาคิวเนื่องจากมีคิวต่อถัดไปไม่สามารถขยายเวลาได้',
+  ui_extend_blocked_closing:
+    'เวลารวมบริการของท่านยาวกว่าเวลาคิวเนื่องจากชนเวลาปิดร้านไม่สามารถขยายเวลาได้',
 
   ui_profile_title: 'บัญชีของฉัน',
   ui_profile_subtitle: 'แก้ไขข้อมูลและดูประวัติการจอง',
@@ -55,6 +59,8 @@ const UI_DEFAULTS = {
 
   ui_shop_picker_title: 'เลือกร้าน',
   ui_shop_picker_subtitle: 'เลือกสาขาที่ต้องการจองคิว',
+
+  ui_admin_add_staff_btn: 'เพิ่มช่าง',
 
   ui_color_primary: '#C4847A',
   ui_color_primary_dark: '#A66B62',

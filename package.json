@@ -4,7 +4,9 @@
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "nodemon src/app.js"
+    "dev": "nodemon src/app.js",
+    "test": "node --test test/**/*.test.js",
+    "test:admin-api": "node --test test/admin-api.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

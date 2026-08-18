@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = {
   unpaid_expire_hours: '24',
   line_push_enabled: 'false',
   booking_slot_hours: '2',
+  extend_booking_by_services: 'false',
+  extend_booking_past_close: 'false',
   coupon_discount_percent: '20',
   coupon_required_points: '100',
   coupon_completion_points: '10',

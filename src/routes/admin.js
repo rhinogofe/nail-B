@@ -13,6 +13,7 @@ const {
   validateRequiredOptions,
   normalizeOptionIds,
 } = require('../utils/bookingOptions')
+const { finalizeBookingSlotWithServices } = require('../utils/bookingServiceDuration')
 const { resolveShowcaseClip, fetchShowcaseThumbnail, showcaseReferer } = require('../utils/showcaseUrl')
 const { validateBookingStartHour, validateBookingSlot, getShopHours } = require('../utils/bookingHours')
 const {
@@ -24,6 +25,9 @@ const {
   validateDayHourPayload,
   getDayHoursForDate,
   getDayHoursForMonth,
+  buildFullDayHourWindows,
+  windowToMinutes,
+  computeDayHourCascadeUpdates,
 } = require('../utils/bookingDayHours')
 const {
   getBookingSlotHours,
@@ -66,8 +70,12 @@ const {
 const {
   syncShopAdminAssignment,
   attachAdminShopFields,
+  resolveAdminAssignmentPermission,
+  getUserAdminShopSlug,
+  isSuperAdmin: userIsSuperAdmin,
 } = require('../utils/shopAdmins')
 const { requireChatUserAccess } = require('../utils/chatAccess')
+const { emitBookingChanged, subscribeBookingEvents } = require('../utils/bookingEvents')
 const { createChatMessage, MESSAGE_FIELDS } = require('../utils/chatMessages')
 const {
   ensureSystemChatUser,
@@ -290,6 +298,28 @@ function buildDateRange(startDate, dayCount) {
   }
   return dates
 }
+
+router.get('/bookings/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders?.()
+
+  res.write(': connected\n\n')
+
+  const unsubscribe = subscribeBookingEvents(req.shop.id, (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+  })
+
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n')
+  }, 30000)
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    unsubscribe()
+  })
+})
 
 router.get('/bookings', async (req, res) => {
   const { date, status } = req.query
@@ -573,7 +603,19 @@ router.post('/bookings', async (req, res) => {
         throw err
       }
 
-      const { slot } = await resolveBookingSlot(client, shopId, req.body)
+      const finalized = await finalizeBookingSlotWithServices(
+        client,
+        shopId,
+        booking_date,
+        req.body,
+        optionIds
+      )
+      if (finalized.error) {
+        const err = new Error(finalized.error)
+        err.status = 400
+        throw err
+      }
+      const slot = finalized.slot
       await assertSlotNotBlocked(client, shopId, booking_date, slot)
       await assertSlotAvailable(client, shopId, booking_date, slot)
 
@@ -628,6 +670,11 @@ router.post('/bookings', async (req, res) => {
     if (status !== 'done') {
       notifyAdminNewBookingChat(getPool(), shopId, booking.booking.id).catch(() => null)
     }
+    emitBookingChanged(shopId, {
+      type: 'created',
+      booking_id: booking.booking.id,
+      booking_date,
+    })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     if (err.code === '23505') {
@@ -640,6 +687,7 @@ router.post('/bookings', async (req, res) => {
 router.patch('/bookings/:id/restore', async (req, res) => {
   const targetStatus = req.body?.status === 'pending' ? 'pending' : 'awaiting_payment'
   const shopId = req.shop.id
+  let restoredDate = null
 
   try {
     await withTransaction(async (client) => {
@@ -654,6 +702,7 @@ router.patch('/bookings/:id/restore', async (req, res) => {
       }
 
       const row = existing.rows[0]
+      restoredDate = String(row.booking_date).slice(0, 10)
       const { slot } = await resolveBookingSlot(client, shopId, {}, row)
       await assertSlotAvailable(client, shopId, row.booking_date, slot, row.id)
 
@@ -676,6 +725,11 @@ router.patch('/bookings/:id/restore', async (req, res) => {
         : 'คืนสถานะจองแล้ว (รอชำระเงิน · เริ่มนับเวลาชำระใหม่)'
 
     res.json({ success: true, message })
+    emitBookingChanged(shopId, {
+      type: 'restored',
+      booking_id: req.params.id,
+      booking_date: restoredDate,
+    })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
@@ -693,6 +747,7 @@ router.patch('/bookings/:id/cancel-unpaid', async (req, res) => {
         WHERE id = $1
           AND shop_id = $2
           AND status = 'awaiting_payment'
+        RETURNING id, booking_date
       `,
       [req.params.id, shopId]
     )
@@ -702,6 +757,12 @@ router.patch('/bookings/:id/cancel-unpaid', async (req, res) => {
     }
 
     res.json({ success: true, message: 'ยกเลิกคิวที่ยังไม่ชำระเงินแล้ว' })
+    const row = result.rows[0]
+    emitBookingChanged(shopId, {
+      type: 'cancelled',
+      booking_id: row.id,
+      booking_date: row.booking_date,
+    })
     notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -719,6 +780,7 @@ router.patch('/bookings/:id/cancel-paid', async (req, res) => {
         WHERE id = $1
           AND shop_id = $2
           AND status = 'pending'
+        RETURNING id, booking_date
       `,
       [req.params.id, shopId]
     )
@@ -731,6 +793,12 @@ router.patch('/bookings/:id/cancel-paid', async (req, res) => {
       success: true,
       message: 'ยกเลิกคิวชำระแล้วแล้ว ช่วงเวลานี้ว่างให้จองใหม่ได้',
     })
+    const row = result.rows[0]
+    emitBookingChanged(shopId, {
+      type: 'cancelled',
+      booking_id: row.id,
+      booking_date: row.booking_date,
+    })
     notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -739,10 +807,11 @@ router.patch('/bookings/:id/cancel-paid', async (req, res) => {
 
 router.delete('/bookings/:id', async (req, res) => {
   const shopId = req.shop.id
+  let deletedDate = null
   try {
     await withTransaction(async (client) => {
       const bookingRes = await client.query(
-        `SELECT id, status FROM bookings WHERE id = $1 AND shop_id = $2`,
+        `SELECT id, status, booking_date FROM bookings WHERE id = $1 AND shop_id = $2`,
         [req.params.id, shopId]
       )
       if (!bookingRes.rows.length) {
@@ -755,6 +824,7 @@ router.delete('/bookings/:id', async (req, res) => {
         err.status = 400
         throw err
       }
+      deletedDate = String(bookingRes.rows[0].booking_date).slice(0, 10)
       await client.query(`DELETE FROM point_logs WHERE booking_id = $1`, [req.params.id])
       const result = await client.query(
         `DELETE FROM bookings WHERE id = $1 AND shop_id = $2 AND status = 'cancelled'`,
@@ -767,6 +837,11 @@ router.delete('/bookings/:id', async (req, res) => {
       }
     })
     res.json({ success: true, message: 'ลบรายการจองแล้ว' })
+    emitBookingChanged(shopId, {
+      type: 'deleted',
+      booking_id: req.params.id,
+      booking_date: deletedDate,
+    })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
@@ -1074,6 +1149,179 @@ router.post('/day-hours', async (req, res) => {
     )
     res.status(201).json(result.rows[0])
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/day-hours/generate-full-day', async (req, res) => {
+  const scheduleDate = String(req.body?.schedule_date || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduleDate)) {
+    return res.status(400).json({ error: 'schedule_date ต้องเป็น YYYY-MM-DD' })
+  }
+
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const replace = req.body?.replace === true
+    const existing = await getDayHoursForDate(pool, shopId, scheduleDate)
+    if (existing.length && !replace) {
+      return res.status(409).json({ error: 'วันนี้มีช่วงเวลาอยู่แล้ว กดยืนยันเพื่อแทนที่ทั้งหมด' })
+    }
+
+    const [shopHours, slotHours] = await Promise.all([
+      getShopHours(pool, shopId),
+      getBookingSlotHours(pool, shopId),
+    ])
+    const windows = buildFullDayHourWindows({
+      openHour: shopHours.openHour,
+      lastBookingHour: shopHours.lastBookingHour,
+      slotHours,
+    })
+    if (!windows.length) {
+      return res.status(400).json({ error: 'ไม่สามารถสร้างช่วงเวลาจากเวลาเปิด-ปิดปกติได้' })
+    }
+
+    const rows = await withTransaction(async (client) => {
+      if (existing.length) {
+        await client.query(
+          `DELETE FROM booking_day_hours WHERE shop_id = $1 AND schedule_date = $2`,
+          [shopId, scheduleDate]
+        )
+      }
+
+      const inserted = []
+      for (const window of windows) {
+        const result = await client.query(
+          `
+            INSERT INTO booking_day_hours (
+              shop_id, schedule_date, start_hour, start_minute, end_hour, end_minute
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+          `,
+          [
+            shopId,
+            scheduleDate,
+            window.start_hour,
+            window.start_minute,
+            window.end_hour,
+            window.end_minute,
+          ]
+        )
+        inserted.push(result.rows[0])
+      }
+      return inserted
+    })
+
+    res.status(201).json({ success: true, count: rows.length, rows })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/day-hours/:id', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const slotHours = await getBookingSlotHours(pool, shopId)
+    const existingRows = await pool.query(
+      `
+        SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute
+        FROM booking_day_hours
+        WHERE id = $1 AND shop_id = $2
+      `,
+      [req.params.id, shopId]
+    )
+    const current = existingRows.rows[0]
+    if (!current) return res.status(404).json({ error: 'ไม่พบรายการ' })
+
+    const scheduleDate = String(current.schedule_date).slice(0, 10)
+    const dayWindows = await getDayHoursForDate(pool, shopId, scheduleDate)
+    const oldParsed = windowToMinutes(current)
+    if (!oldParsed) return res.status(400).json({ error: 'ข้อมูลเวลาเดิมไม่ถูกต้อง' })
+
+    const validated = validateDayHourPayload(
+      {
+        schedule_date: scheduleDate,
+        start_hour: req.body?.start_hour ?? current.start_hour,
+        start_minute: req.body?.start_minute ?? current.start_minute ?? 0,
+        end_hour: req.body?.end_hour ?? current.end_hour,
+        end_minute: req.body?.end_minute ?? current.end_minute ?? 0,
+      },
+      dayWindows,
+      slotHours,
+      current.id,
+      { checkOverlap: false }
+    )
+    if (!validated.ok) return res.status(400).json({ error: validated.error })
+
+    const cascade = computeDayHourCascadeUpdates(
+      dayWindows,
+      current.id,
+      {
+        start_hour: validated.start_hour,
+        start_minute: validated.start_minute,
+        end_hour: validated.end_hour,
+        end_minute: validated.end_minute,
+      },
+      oldParsed.endM
+    )
+    if (cascade.error) return res.status(400).json({ error: cascade.error })
+
+    const updatingIds = new Set(cascade.updates.map((u) => String(u.id)))
+    const updatedRows = await withTransaction(async (client) => {
+      const result = []
+      for (const patch of cascade.updates) {
+        const others = dayWindows.filter((w) => !updatingIds.has(String(w.id)))
+        const overlap = validateDayHourPayload(
+          {
+            schedule_date: scheduleDate,
+            start_hour: patch.start_hour,
+            start_minute: patch.start_minute,
+            end_hour: patch.end_hour,
+            end_minute: patch.end_minute,
+          },
+          others,
+          slotHours
+        )
+        if (!overlap.ok) {
+          const err = new Error(overlap.error)
+          err.status = 400
+          throw err
+        }
+
+        const row = await client.query(
+          `
+            UPDATE booking_day_hours
+            SET
+              start_hour = $1,
+              start_minute = $2,
+              end_hour = $3,
+              end_minute = $4
+            WHERE id = $5 AND shop_id = $6
+            RETURNING id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+          `,
+          [
+            patch.start_hour,
+            patch.start_minute,
+            patch.end_hour,
+            patch.end_minute,
+            patch.id,
+            shopId,
+          ]
+        )
+        result.push(row.rows[0])
+      }
+      return result
+    })
+
+    res.json({
+      success: true,
+      updated: updatedRows,
+      cascaded: updatedRows.length > 1,
+    })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
@@ -1555,6 +1803,80 @@ router.patch('/settings/booking-slot-hours', async (req, res) => {
   }
 })
 
+router.get('/settings/extend-booking-by-services', async (req, res) => {
+  try {
+    const pool = getPool()
+    const { getExtendBookingSettings } = require('../utils/extendBookingSettings')
+    const { getUiSettings } = require('../utils/shopUiSettings')
+    const [settings, ui] = await Promise.all([
+      getExtendBookingSettings(pool, req.shop.id),
+      getUiSettings(pool, req.shop.id),
+    ])
+    res.json({
+      enabled: settings.enabled,
+      past_close_enabled: settings.pastCloseEnabled,
+      block_next_booking_message: ui.ui_extend_blocked_next_booking,
+      block_closing_message: ui.ui_extend_blocked_closing,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/extend-booking-by-services', async (req, res) => {
+  const hasEnabled = typeof req.body?.enabled === 'boolean'
+  const hasPastClose = typeof req.body?.past_close_enabled === 'boolean'
+  const hasNextMsg = typeof req.body?.block_next_booking_message === 'string'
+  const hasClosingMsg = typeof req.body?.block_closing_message === 'string'
+
+  if (!hasEnabled && !hasPastClose && !hasNextMsg && !hasClosingMsg) {
+    return res.status(400).json({ error: 'ต้องระบุค่าที่ต้องการบันทึก' })
+  }
+
+  try {
+    const pool = getPool()
+    if (hasEnabled) {
+      await setShopSetting(
+        pool,
+        req.shop.id,
+        'extend_booking_by_services',
+        req.body.enabled ? 'true' : 'false'
+      )
+    }
+    if (hasPastClose) {
+      await setShopSetting(
+        pool,
+        req.shop.id,
+        'extend_booking_past_close',
+        req.body.past_close_enabled ? 'true' : 'false'
+      )
+    }
+    if (hasNextMsg || hasClosingMsg) {
+      const { setUiSettings } = require('../utils/shopUiSettings')
+      const partial = {}
+      if (hasNextMsg) partial.ui_extend_blocked_next_booking = req.body.block_next_booking_message
+      if (hasClosingMsg) partial.ui_extend_blocked_closing = req.body.block_closing_message
+      await setUiSettings(pool, req.shop.id, partial)
+    }
+
+    const { getExtendBookingSettings } = require('../utils/extendBookingSettings')
+    const { getUiSettings } = require('../utils/shopUiSettings')
+    const [settings, ui] = await Promise.all([
+      getExtendBookingSettings(pool, req.shop.id),
+      getUiSettings(pool, req.shop.id),
+    ])
+    res.json({
+      success: true,
+      enabled: settings.enabled,
+      past_close_enabled: settings.pastCloseEnabled,
+      block_next_booking_message: ui.ui_extend_blocked_next_booking,
+      block_closing_message: ui.ui_extend_blocked_closing,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/settings/ui', async (req, res) => {
   try {
     const pool = getPool()
@@ -1638,7 +1960,7 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
     const settings = await getUnpaidExpireSettings(pool, shopId)
 
     const found = await pool.query(
-      `SELECT id, status, created_at FROM bookings WHERE id = $1 AND shop_id = $2`,
+      `SELECT id, status, created_at, booking_date FROM bookings WHERE id = $1 AND shop_id = $2`,
       [req.params.id, shopId]
     )
     const row = found.rows[0]
@@ -1652,6 +1974,11 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
         [req.params.id, shopId]
       )
       notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
+      emitBookingChanged(shopId, {
+        type: 'auto_cancelled',
+        booking_id: row.id,
+        booking_date: row.booking_date,
+      })
       return res.status(409).json({ error: 'คิวหมดเวลาชำระแล้ว ถูกยกเลิกอัตโนมัติ' })
     }
 
@@ -1662,6 +1989,7 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
         WHERE id = $1
           AND shop_id = $2
           AND status = 'awaiting_payment'
+        RETURNING id, booking_date
       `,
       [req.params.id, shopId]
     )
@@ -1671,6 +1999,11 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
     }
 
     res.json({ success: true, message: 'ยืนยันชำระเงินแล้ว คิวพร้อมให้บริการ' })
+    emitBookingChanged(shopId, {
+      type: 'payment_confirmed',
+      booking_id: result.rows[0].id,
+      booking_date: result.rows[0].booking_date,
+    })
     notifyBookingPaidChat(pool, shopId, req.params.id).catch(() => null)
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1689,6 +2022,7 @@ router.patch('/bookings/:id/revert-payment', async (req, res) => {
         WHERE id = $1
           AND shop_id = $2
           AND status = 'pending'
+        RETURNING id, booking_date
       `,
       [req.params.id, shopId]
     )
@@ -1700,6 +2034,11 @@ router.patch('/bookings/:id/revert-payment', async (req, res) => {
     res.json({
       success: true,
       message: 'เปลี่ยนเป็นรอชำระเงินแล้ว · เริ่มนับเวลาชำระใหม่',
+    })
+    emitBookingChanged(shopId, {
+      type: 'payment_reverted',
+      booking_id: result.rows[0].id,
+      booking_date: result.rows[0].booking_date,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1714,6 +2053,7 @@ router.patch('/bookings/:id/complete', async (req, res) => {
 
   try {
     const shopId = req.shop.id
+    let completedDate = null
     const awardedPoints = await withTransaction(async (client) => {
       const found = await client.query(
         `SELECT * FROM bookings WHERE id = $1 AND shop_id = $2 AND status = 'pending'`,
@@ -1725,6 +2065,7 @@ router.patch('/bookings/:id/complete', async (req, res) => {
         throw err
       }
       const row = found.rows[0]
+      completedDate = row.booking_date
 
       await client.query(
         `UPDATE bookings SET status = 'done', completed_at = NOW(), total = $3 WHERE id = $1 AND shop_id = $2`,
@@ -1739,6 +2080,11 @@ router.patch('/bookings/:id/complete', async (req, res) => {
         ? `เสร็จแล้ว! ลูกค้าได้รับ +${awardedPoints} แต้ม`
         : 'เสร็จแล้ว!'
     res.json({ success: true, message: msg, completion_points: awardedPoints })
+    emitBookingChanged(shopId, {
+      type: 'completed',
+      booking_id: req.params.id,
+      booking_date: completedDate,
+    })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
@@ -1817,21 +2163,39 @@ router.patch('/bookings/:id', async (req, res) => {
 
       let effectiveSlot = null
       let slotHours = null
-      if (hasStartHour || hasBookingDate) {
+      let effectiveOptionIds = optionIds
+      if (effectiveOptionIds === null) {
+        const currentOptions = await client.query(
+          `SELECT nailoption_id FROM booking_nailoptions WHERE booking_id = $1`,
+          [req.params.id]
+        )
+        effectiveOptionIds = currentOptions.rows.map((r) => r.nailoption_id)
+      }
+
+      const shouldFinalizeSlot = hasStartHour || hasBookingDate || optionIds !== null
+      if (shouldFinalizeSlot) {
+        slotHours = await getBookingSlotHours(client, shopId)
         const slotBody = {
           start_hour: hasStartHour ? req.body.start_hour : row.start_hour,
           start_minute: req.body.start_minute ?? row.start_minute ?? 0,
-          end_hour: req.body.end_hour ?? row.end_hour,
-          end_minute: req.body.end_minute ?? row.end_minute ?? 0,
         }
-        const resolved = await resolveBookingSlot(client, shopId, slotBody, row)
-        effectiveSlot = resolved.slot
-        slotHours = resolved.slotHours
-
         const slotError = await validateBookingSlot(client, shopId, effectiveDate, slotBody, slotHours)
         if (slotError) {
           throw { status: 400, message: slotError }
         }
+
+        const finalized = await finalizeBookingSlotWithServices(
+          client,
+          shopId,
+          effectiveDate,
+          slotBody,
+          effectiveOptionIds
+        )
+        if (finalized.error) {
+          throw { status: 400, message: finalized.error }
+        }
+        effectiveSlot = finalized.slot
+        slotHours = finalized.slotHours
 
         const existingSlot = normalizeSlotInput(row, slotHours)
         const slotChanged = !existingSlot
@@ -1875,7 +2239,7 @@ router.patch('/bookings/:id', async (req, res) => {
         updates.push(`end_minute = $${paramIdx}`)
         params.push(effectiveSlot.endMinute)
         paramIdx += 1
-      } else if (hasBookingDate && effectiveSlot) {
+      } else if ((hasBookingDate || optionIds !== null) && effectiveSlot) {
         updates.push(`start_hour = $${paramIdx}`)
         params.push(effectiveSlot.startHour)
         paramIdx += 1
@@ -1931,6 +2295,11 @@ router.patch('/bookings/:id', async (req, res) => {
     })
 
     res.json({ success: true, message: 'บันทึกแล้ว', booking })
+    emitBookingChanged(shopId, {
+      type: 'updated',
+      booking_id: booking.id,
+      booking_date: booking.booking_date,
+    })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     if (err.code === '23505') {
@@ -1945,7 +2314,18 @@ router.get('/users', async (req, res) => {
     const pool = getPool()
     const shopId = req.shop.id
     const showAllUsers = req.shop.slug === 'default'
-    const bookingJoin = showAllUsers ? 'LEFT' : 'INNER'
+    const branchScope = showAllUsers
+      ? ''
+      : `
+        WHERE EXISTS (
+          SELECT 1 FROM shop_admins sa_scope
+          WHERE sa_scope.user_id = u.id AND sa_scope.shop_id = $1
+        )
+        OR EXISTS (
+          SELECT 1 FROM bookings b_scope
+          WHERE b_scope.user_id = u.id AND b_scope.shop_id = $1
+        )
+      `
     const result = await pool.query(
       `
       SELECT
@@ -1969,7 +2349,8 @@ router.get('/users', async (req, res) => {
           LIMIT 1
         ) AS admin_shop_slug
       FROM users u
-      ${bookingJoin} JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
+      LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
+      ${branchScope}
       GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
       ORDER BY u.is_admin DESC, u.total_points DESC
     `,
@@ -2060,27 +2441,134 @@ router.get('/users/:id/bookings', async (req, res) => {
   }
 })
 
+router.post('/users/staff', async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const phone = normalizePhone(req.body?.phone)
+  if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อ' })
+  if (!phone || phone.length < 9) return res.status(400).json({ error: 'กรุณาระบุเบอร์โทรให้ถูกต้อง' })
+
+  if (!req.isSuperAdmin && req.shop.slug === 'default') {
+    return res.status(403).json({ error: 'แอดมินสาขาไม่สามารถเพิ่มช่างที่สาขาหลักได้' })
+  }
+
+  let adminShopSlug = req.isSuperAdmin
+    ? String(req.body?.admin_shop_slug || 'default').trim().toLowerCase()
+    : req.shop.slug
+
+  if (!req.isSuperAdmin) {
+    adminShopSlug = req.shop.slug
+  }
+  if (!req.isSuperAdmin && adminShopSlug === 'default') {
+    return res.status(403).json({ error: 'เพิ่มช่างได้เฉพาะสาขาของคุณเท่านั้น' })
+  }
+
+  try {
+    const pool = getPool()
+    const shopRes = await pool.query(
+      `SELECT id, slug, name FROM shops WHERE slug = $1 LIMIT 1`,
+      [adminShopSlug]
+    )
+    if (!shopRes.rows[0]) {
+      return res.status(400).json({ error: 'ไม่พบสาขาที่เลือก' })
+    }
+
+    const userRow = await withTransaction(async (client) => {
+      const found = await client.query(
+        `
+          SELECT id, name, is_admin
+          FROM users
+          WHERE provider = 'phone'
+            AND provider_id = $1
+            AND lower(trim(name)) = lower(trim($2))
+          LIMIT 1
+        `,
+        [phone, name]
+      )
+
+      let userId
+      if (found.rows[0]) {
+        userId = found.rows[0].id
+        if (await userIsSuperAdmin(client, userId)) {
+          throw { status: 403, message: 'ไม่สามารถจัดการแอดมินหลักได้' }
+        }
+        const targetSlug = await getUserAdminShopSlug(client, userId)
+        if (targetSlug && targetSlug !== adminShopSlug) {
+          throw { status: 403, message: 'ผู้ใช้นี้เป็นแอดมินสาขาอื่นอยู่แล้ว' }
+        }
+        if (found.rows[0].is_admin && targetSlug === adminShopSlug) {
+          throw { status: 409, message: 'ผู้ใช้นี้เป็นแอดมินสาขานี้อยู่แล้ว' }
+        }
+        await client.query(`UPDATE users SET is_admin = true WHERE id = $1`, [userId])
+      } else {
+        const created = await client.query(
+          `
+            INSERT INTO users (name, email, avatar_url, provider, provider_id, is_admin)
+            VALUES ($1, $2, NULL, 'phone', $3, true)
+            RETURNING id
+          `,
+          [name, `${phone}@phone.local`, phone]
+        )
+        userId = created.rows[0].id
+      }
+
+      await syncShopAdminAssignment(client, userId, {
+        isAdmin: true,
+        adminShopSlug,
+      })
+
+      const full = await client.query(
+        `
+          SELECT id, name, email, avatar_url, provider, provider_id, admin_note, is_admin, total_points, created_at
+          FROM users WHERE id = $1
+        `,
+        [userId]
+      )
+      return full.rows[0]
+    })
+
+    const enriched = await attachAdminShopFields(pool, userRow)
+    res.status(201).json({
+      success: true,
+      user: {
+        ...enriched,
+        total_bookings: 0,
+        completed_bookings: 0,
+        cancelled_bookings: 0,
+      },
+    })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'ชื่อและเบอร์นี้ถูกใช้แล้ว' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/users/:id/set-admin', async (req, res) => {
   const { is_admin, admin_shop_slug } = req.body
   if (req.params.id === req.user.id && !is_admin) {
     return res.status(400).json({ error: 'ไม่สามารถถอดสิทธิ์แอดมินของตัวเองได้' })
   }
-  if (Boolean(is_admin) && !req.isSuperAdmin) {
-    return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่ให้สิทธิ์แอดมินได้' })
-  }
-  const slug = String(admin_shop_slug || 'default').trim().toLowerCase()
-  if (Boolean(is_admin) && slug === 'default' && !req.isSuperAdmin) {
-    return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่ตั้งแอดมินทุกสาขาได้' })
-  }
+  const grant = Boolean(is_admin)
   try {
+    const pool = getPool()
+    const permission = await resolveAdminAssignmentPermission(pool, req, req.params.id, {
+      grant,
+      adminShopSlug: admin_shop_slug,
+    })
+    if (!permission.ok) {
+      return res.status(permission.status || 403).json({ error: permission.error })
+    }
+    const slug = grant ? permission.slug : (permission.slug || req.shop.slug)
     await withTransaction(async (client) => {
-      await client.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [Boolean(is_admin), req.params.id])
+      await client.query(`UPDATE users SET is_admin = $1 WHERE id = $2`, [grant, req.params.id])
       await syncShopAdminAssignment(client, req.params.id, {
-        isAdmin: Boolean(is_admin),
+        isAdmin: grant,
         adminShopSlug: slug,
       })
     })
-    res.json({ success: true, admin_shop_slug: Boolean(is_admin) ? slug : null })
+    res.json({ success: true, admin_shop_slug: grant ? slug : null })
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
   }
@@ -2133,12 +2621,32 @@ router.patch('/users/:id', async (req, res) => {
   }
 
   if (has('admin_shop_slug') || (has('is_admin') && req.body.is_admin)) {
-    const slug = String(req.body.admin_shop_slug || 'default').trim().toLowerCase()
-    if (slug === 'default' && !req.isSuperAdmin) {
-      return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่ตั้งแอดมินทุกสาขาได้' })
+    try {
+      const pool = getPool()
+      const grant = has('is_admin') ? Boolean(req.body.is_admin) : true
+      const permission = await resolveAdminAssignmentPermission(pool, req, req.params.id, {
+        grant,
+        adminShopSlug: req.body.admin_shop_slug,
+      })
+      if (!permission.ok) {
+        return res.status(permission.status || 403).json({ error: permission.error })
+      }
+      req.resolvedAdminShopSlug = permission.slug
+    } catch (err) {
+      return res.status(500).json({ error: err.message })
     }
-    if ((has('admin_shop_slug') || req.body.is_admin) && !req.isSuperAdmin) {
-      return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้นที่จัดการสิทธิ์แอดมินได้' })
+  } else if (has('is_admin') && !req.body.is_admin) {
+    try {
+      const pool = getPool()
+      const permission = await resolveAdminAssignmentPermission(pool, req, req.params.id, {
+        grant: false,
+        adminShopSlug: null,
+      })
+      if (!permission.ok) {
+        return res.status(permission.status || 403).json({ error: permission.error })
+      }
+    } catch (err) {
+      return res.status(500).json({ error: err.message })
     }
   }
 
@@ -2188,7 +2696,7 @@ router.patch('/users/:id', async (req, res) => {
       }
       await syncShopAdminAssignment(pool, req.params.id, {
         isAdmin: true,
-        adminShopSlug: req.body.admin_shop_slug || 'default',
+        adminShopSlug: req.resolvedAdminShopSlug || req.body.admin_shop_slug || 'default',
       })
       const shopId = req.shop.id
       const stats = await pool.query(
@@ -2241,7 +2749,7 @@ router.patch('/users/:id', async (req, res) => {
       if (adminFlag) {
         await syncShopAdminAssignment(pool, userId, {
           isAdmin: true,
-          adminShopSlug: req.body.admin_shop_slug || 'default',
+          adminShopSlug: req.resolvedAdminShopSlug || req.body.admin_shop_slug || 'default',
         })
       } else if (has('is_admin')) {
         await pool.query(`DELETE FROM shop_admins WHERE user_id = $1`, [userId])

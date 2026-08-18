@@ -92,6 +92,92 @@ async function syncShopAdminAssignment(client, userId, { isAdmin, adminShopSlug 
   )
 }
 
+async function getUserAdminShopSlug(poolOrClient, userId) {
+  const result = await poolOrClient.query(
+    `
+      SELECT s.slug
+      FROM shop_admins sa
+      JOIN shops s ON s.id = sa.shop_id
+      WHERE sa.user_id = $1
+      ORDER BY CASE WHEN s.slug = 'default' THEN 0 ELSE 1 END, s.slug
+      LIMIT 1
+    `,
+    [userId]
+  )
+  return result.rows[0]?.slug || null
+}
+
+async function userHasBookingAtShop(poolOrClient, userId, shopId) {
+  const result = await poolOrClient.query(
+    `SELECT 1 FROM bookings WHERE user_id = $1 AND shop_id = $2 LIMIT 1`,
+    [userId, shopId]
+  )
+  return result.rows.length > 0
+}
+
+async function resolveAdminAssignmentPermission(poolOrClient, req, targetUserId, { grant, adminShopSlug }) {
+  const slugInput = adminShopSlug != null && adminShopSlug !== ''
+    ? String(adminShopSlug).trim().toLowerCase()
+    : null
+
+  if (req.isSuperAdmin) {
+    const slug = slugInput || 'default'
+    return { ok: true, slug }
+  }
+
+  const reqShopSlug = req.shop?.slug
+  if (!reqShopSlug || reqShopSlug === 'default') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'แอดมินสาขาไม่สามารถจัดการสิทธิ์ที่สาขาหลักได้',
+    }
+  }
+
+  if (await isSuperAdmin(poolOrClient, targetUserId)) {
+    return { ok: false, status: 403, error: 'ไม่สามารถจัดการแอดมินหลักได้' }
+  }
+
+  const targetSlug = await getUserAdminShopSlug(poolOrClient, targetUserId)
+
+  if (grant) {
+    const slug = slugInput || reqShopSlug
+    if (slug === 'default' || slug !== reqShopSlug) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'ให้สิทธิ์แอดมินได้เฉพาะสาขาของคุณเท่านั้น',
+      }
+    }
+    if (targetSlug && targetSlug !== reqShopSlug) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'ผู้ใช้นี้เป็นแอดมินสาขาอื่นอยู่แล้ว',
+      }
+    }
+    const hasBooking = await userHasBookingAtShop(poolOrClient, targetUserId, req.shop.id)
+    if (!hasBooking && !targetSlug) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'ให้สิทธิ์ได้เฉพาะลูกค้าที่เคยจองที่สาขานี้',
+      }
+    }
+    return { ok: true, slug }
+  }
+
+  if (targetSlug && targetSlug !== reqShopSlug) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'จัดการได้เฉพาะแอดมินสาขาของคุณเท่านั้น',
+    }
+  }
+
+  return { ok: true, slug: reqShopSlug }
+}
+
 async function attachAdminShopFields(poolOrClient, userRow) {
   if (!userRow?.is_admin) {
     return {
@@ -110,6 +196,9 @@ module.exports = {
   canManageShop,
   getManagedShopSlugs,
   getAdminShopInfo,
+  getUserAdminShopSlug,
+  userHasBookingAtShop,
+  resolveAdminAssignmentPermission,
   syncShopAdminAssignment,
   attachAdminShopFields,
 }

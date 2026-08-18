@@ -1,6 +1,7 @@
 const { normalizeBookingSlotHours, DEFAULT_SLOT_HOURS } = require('./bookingSlotHours')
 
 const MAX_MINUTES = 23 * 60 + 59
+const MIN_GAP_MINUTES = 60
 
 function toMinutes(hour, minute = 0) {
   return Number(hour) * 60 + Number(minute)
@@ -45,7 +46,101 @@ function getUsedHoursForWindows(windows) {
   return used
 }
 
-function validateDayHourPayload(body, existingWindows, _slotHours = DEFAULT_SLOT_HOURS) {
+function minutesToHm(totalMinutes) {
+  const mins = Math.max(0, Math.floor(Number(totalMinutes)))
+  return { hour: Math.floor(mins / 60), minute: mins % 60 }
+}
+
+function buildFullDayHourWindows({
+  openHour = 9,
+  lastBookingHour = 18,
+  slotHours = DEFAULT_SLOT_HOURS,
+  minGapMinutes = MIN_GAP_MINUTES,
+}) {
+  const slot = normalizeBookingSlotHours(slotHours)
+  const slotLenM = slot * 60
+  const timelineStart = Number(openHour) * 60
+  const maxEndM = (Number(lastBookingHour) + slot) * 60
+  const result = []
+  let cursor = timelineStart
+
+  while (cursor < maxEndM) {
+    const space = maxEndM - cursor
+    if (space >= slotLenM) {
+      const endM = cursor + slotLenM
+      const start = minutesToHm(cursor)
+      const end = minutesToHm(endM)
+      result.push({
+        start_hour: start.hour,
+        start_minute: start.minute,
+        end_hour: end.hour,
+        end_minute: end.minute,
+      })
+      cursor = endM
+    } else if (space >= minGapMinutes) {
+      const start = minutesToHm(cursor)
+      const end = minutesToHm(maxEndM)
+      result.push({
+        start_hour: start.hour,
+        start_minute: start.minute,
+        end_hour: end.hour,
+        end_minute: end.minute,
+      })
+      cursor = maxEndM
+    } else {
+      break
+    }
+  }
+
+  return result
+}
+
+function sortWindowsByStart(windows) {
+  return [...(windows || [])].sort((a, b) => {
+    const wa = windowToMinutes(a)
+    const wb = windowToMinutes(b)
+    if (!wa || !wb) return 0
+    return wa.startM - wb.startM || wa.endM - wb.endM
+  })
+}
+
+function computeDayHourCascadeUpdates(windows, editedId, candidate, oldEndM) {
+  const sorted = sortWindowsByStart(windows)
+  const idx = sorted.findIndex((w) => String(w.id) === String(editedId))
+  if (idx < 0) return { error: 'ไม่พบรายการ' }
+
+  const updates = [{
+    id: editedId,
+    start_hour: candidate.start_hour,
+    start_minute: candidate.start_minute,
+    end_hour: candidate.end_hour,
+    end_minute: candidate.end_minute,
+  }]
+
+  const newEndM = toMinutes(candidate.end_hour, candidate.end_minute)
+  const next = sorted[idx + 1]
+  if (next) {
+    const nextParsed = windowToMinutes(next)
+    if (nextParsed && nextParsed.startM === oldEndM) {
+      if (newEndM >= nextParsed.endM) {
+        return { error: 'เวลาสิ้นสุดยาวเกินไป ทับช่วงถัดไป' }
+      }
+      const start = minutesToHm(newEndM)
+      updates.push({
+        id: next.id,
+        start_hour: start.hour,
+        start_minute: start.minute,
+        end_hour: next.end_hour,
+        end_minute: next.end_minute ?? 0,
+      })
+    }
+  }
+
+  return { updates }
+}
+
+function validateDayHourPayload(body, existingWindows, _slotHours = DEFAULT_SLOT_HOURS, excludeId = null, options = {}) {
+  const { checkOverlap = true } = options
   const scheduleDate = String(body?.schedule_date || '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduleDate)) {
     return { ok: false, error: 'ต้องระบุ schedule_date (YYYY-MM-DD)' }
@@ -72,9 +167,12 @@ function validateDayHourPayload(body, existingWindows, _slotHours = DEFAULT_SLOT
     end_hour: end.hour,
     end_minute: end.minute,
   }
-  for (const existing of existingWindows || []) {
-    if (windowsOverlap(candidate, existing)) {
-      return { ok: false, error: 'ช่วงเวลาทับซ้อนกับรายการที่มีอยู่แล้ว' }
+  if (checkOverlap) {
+    for (const existing of existingWindows || []) {
+      if (excludeId != null && String(existing.id) === String(excludeId)) continue
+      if (windowsOverlap(candidate, existing)) {
+        return { ok: false, error: 'ช่วงเวลาทับซ้อนกับรายการที่มีอยู่แล้ว' }
+      }
     }
   }
 
@@ -137,11 +235,16 @@ async function getDayHoursForMonth(poolOrClient, shopId, monthYm) {
 
 module.exports = {
   MAX_MINUTES,
+  MIN_GAP_MINUTES,
   toMinutes,
   normalizeHm,
+  minutesToHm,
   windowToMinutes,
   windowsOverlap,
   getUsedHoursForWindows,
+  buildFullDayHourWindows,
+  sortWindowsByStart,
+  computeDayHourCascadeUpdates,
   validateDayHourPayload,
   isHourWithinDayWindows,
   getDayHoursForDate,

@@ -63,9 +63,26 @@ function normalizeOptionIds(raw) {
   return [...new Set(raw.map((id) => String(id).trim()).filter(Boolean))]
 }
 
+async function sumOptionDurationMinutes(db, shopId, optionIds) {
+  if (!optionIds?.length) return 0
+  const placeholders = optionIds.map((_, idx) => `$${idx + 2}`).join(', ')
+  const result = await db.query(
+    `
+      SELECT COALESCE(SUM(duration_min), 0)::int AS total
+      FROM nailoption
+      WHERE shop_id = $1
+        AND is_active = true
+        AND id IN (${placeholders})
+    `,
+    [shopId, ...optionIds]
+  )
+  return Number(result.rows[0]?.total) || 0
+}
+
 module.exports = {
   syncBookingOptions,
   validateOptionIds,
   validateRequiredOptions,
   normalizeOptionIds,
+  sumOptionDurationMinutes,
 }

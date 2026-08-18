@@ -43,6 +43,13 @@ function matchesDayWindowSlot(slot, dayWindows) {
   )
 }
 
+function matchesDayWindowStart(slot, dayWindows) {
+  return (dayWindows || []).some((w) =>
+    Number(w.start_hour) === slot.startHour
+    && normalizeMinute(w.start_minute) === slot.startMinute
+  )
+}
+
 function bookingRowToMinutes(row, slotHours = DEFAULT_SLOT_HOURS) {
   const slot = normalizeBookingSlotHours(slotHours)
   const startHour = Number(row.start_hour)
@@ -61,5 +68,6 @@ module.exports = {
   normalizeSlotInput,
   rangesOverlap,
   matchesDayWindowSlot,
+  matchesDayWindowStart,
   bookingRowToMinutes,
 }
