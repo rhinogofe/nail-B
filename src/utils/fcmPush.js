@@ -126,27 +126,31 @@ async function getShopPushContext(pool, shopId) {
   return result.rows[0] || null
 }
 
-function buildChatPushPayload({ shopSlug, title, body, userId, target = 'admin' }) {
+function buildChatPushPayload({ shopSlug, title, body, userId, target = 'admin', bookingId = null }) {
   const base = String(shopSlug || 'default')
   const url = target === 'customer'
     ? `/${base}/chat`
     : userId
       ? `/${base}/chat?userId=${userId}`
       : `/${base}/chat`
+  const data = {
+    type: 'chat',
+    shopSlug: base,
+    userId: userId ? String(userId) : '',
+    target,
+  }
+  if (bookingId) {
+    data.bookingId = String(bookingId)
+  }
   return {
     title,
     body,
     url,
-    data: {
-      type: 'chat',
-      shopSlug: base,
-      userId: userId ? String(userId) : '',
-      target,
-    },
+    data,
   }
 }
 
-async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, title = 'แจ้งเตือนระบบ', messageId = null }) {
+async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, title = 'แจ้งเตือนระบบ', messageId = null, bookingId = null }) {
   const shop = await getShopPushContext(pool, shopId)
   if (!shop) return { ok: false, skipped: true, reason: 'shop_not_found' }
 
@@ -158,6 +162,7 @@ async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, ti
     body,
     userId: systemUserId,
     target: 'admin',
+    bookingId,
   })
   if (messageId) {
     payload.data.messageId = String(messageId)
@@ -165,7 +170,7 @@ async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, ti
   return sendPushToShopAdmins(pool, shopId, payload)
 }
 
-async function pushAfterCustomerChatNotify(pool, shopId, userId, { body, title = 'แจ้งเตือนจากร้าน', messageId = null }) {
+async function pushAfterCustomerChatNotify(pool, shopId, userId, { body, title = 'แจ้งเตือนจากร้าน', messageId = null, bookingId = null }) {
   const shop = await getShopPushContext(pool, shopId)
   if (!shop || !userId) return { ok: false, skipped: true, reason: 'missing_target' }
 
@@ -174,6 +179,7 @@ async function pushAfterCustomerChatNotify(pool, shopId, userId, { body, title =
     title: `${title} · ${shop.name}`,
     body,
     target: 'customer',
+    bookingId,
   })
   if (messageId) {
     payload.data.messageId = String(messageId)

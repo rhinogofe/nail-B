@@ -85,6 +85,7 @@ async function notifyAdminNewBookingChat(poolOrClient, shopId, bookingId) {
       body: text,
       relatedUserId: customerUserId,
       messageId: row.id,
+      bookingId,
     }).catch(() => null)
     return { ok: true, messageId: row.id }
   } catch (err) {
@@ -125,6 +126,7 @@ async function notifyAdminUpcomingChat(poolOrClient, shopId, bookingId, minutesU
       body: text,
       relatedUserId: customerUserId,
       messageId: row.id,
+      bookingId,
     }).catch(() => null)
     return { ok: true, messageId: row.id }
   } catch (err) {
@@ -164,6 +166,7 @@ async function notifyCustomerUpcomingChat(poolOrClient, shopId, bookingId, minut
       title: 'ใกล้ถึงเวลาคิว',
       body: text,
       messageId: row.id,
+      bookingId,
     }).catch(() => null)
     return { ok: true, messageId: row.id }
   } catch (err) {
@@ -208,6 +211,7 @@ async function notifyBookingCancelledChat(poolOrClient, shopId, bookingId) {
           body: text,
           relatedUserId: customerUserId,
           messageId: row.id,
+          bookingId,
         }).catch(() => null)
       }
     }
@@ -224,6 +228,7 @@ async function notifyBookingCancelledChat(poolOrClient, shopId, bookingId) {
           title: 'คิวถูกยกเลิก',
           body: text,
           messageId: row.id,
+          bookingId,
         }).catch(() => null)
       }
     }
@@ -262,6 +267,7 @@ async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
           body: text,
           relatedUserId: customerUserId,
           messageId: row.id,
+          bookingId,
         }).catch(() => null)
       }
     }
@@ -278,6 +284,7 @@ async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
           title: 'ชำระเงินแล้ว',
           body: text,
           messageId: row.id,
+          bookingId,
         }).catch(() => null)
       }
     }
