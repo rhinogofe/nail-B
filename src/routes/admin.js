@@ -2179,6 +2179,13 @@ router.patch('/bookings/:id', async (req, res) => {
           start_hour: hasStartHour ? req.body.start_hour : row.start_hour,
           start_minute: req.body.start_minute ?? row.start_minute ?? 0,
         }
+        if (req.body.end_hour != null) {
+          slotBody.end_hour = req.body.end_hour
+          slotBody.end_minute = req.body.end_minute ?? 0
+        } else if (row.end_hour != null) {
+          slotBody.end_hour = row.end_hour
+          slotBody.end_minute = row.end_minute ?? 0
+        }
         const slotError = await validateBookingSlot(client, shopId, effectiveDate, slotBody, slotHours)
         if (slotError) {
           throw { status: 400, message: slotError }
