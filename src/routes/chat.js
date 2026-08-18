@@ -5,6 +5,7 @@ const { getPool } = require('../db/pool')
 const { canManageShop } = require('../utils/shopAdmins')
 const { createChatMessage, buildLatestMessagesQuery } = require('../utils/chatMessages')
 const { readChatImageFile, getChatImageCacheMaxAge, MIME_EXT } = require('../utils/chatImages')
+const { pushAfterCustomerChatMessage } = require('../utils/fcmPush')
 
 router.use(resolveShop)
 router.use(auth)
@@ -61,6 +62,14 @@ router.post('/messages', async (req, res) => {
       imageMime: req.body?.image_mime,
     })
     res.status(201).json(row)
+
+    pushAfterCustomerChatMessage(pool, req.shop.id, {
+      customerId: req.user.id,
+      customerName: req.user.name,
+      body: row?.body,
+      imageUrl: row?.image_url,
+      messageId: row?.id,
+    }).catch(() => null)
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })

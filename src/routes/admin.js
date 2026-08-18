@@ -83,7 +83,8 @@ const {
   SYSTEM_USER_NAME,
   SYSTEM_USER_EMAIL,
 } = require('../utils/systemChatUser')
-const { deleteChatImagesForConversation } = require('../utils/chatImages')
+const { deleteChatImagesForConversation, deleteChatImageFile } = require('../utils/chatImages')
+const { pushAfterAdminChatMessage } = require('../utils/fcmPush')
 const {
   getRegisterShopPin,
   setRegisterShopPin,
@@ -3883,6 +3884,12 @@ router.post('/chat/conversations/:userId/messages', async (req, res) => {
       imageMime: req.body?.image_mime,
     })
     res.status(201).json(row)
+
+    pushAfterAdminChatMessage(pool, shopId, userId, {
+      body: row?.body,
+      imageUrl: row?.image_url,
+      messageId: row?.id,
+    }).catch(() => null)
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
@@ -3895,10 +3902,6 @@ router.delete('/chat/conversations/:userId', async (req, res) => {
     const shopId = req.shop.id
     const userId = req.params.userId
 
-    if (await isSystemChatUser(pool, shopId, userId)) {
-      return res.status(403).json({ error: 'ไม่สามารถลบแชทระบบได้' })
-    }
-
     await requireChatUserAccess(pool, req.shop, userId)
 
     await deleteChatImagesForConversation(pool, shopId, userId)
@@ -3907,11 +3910,41 @@ router.delete('/chat/conversations/:userId', async (req, res) => {
       [shopId, userId]
     )
 
+    const systemThread = await isSystemChatUser(pool, shopId, userId)
     res.json({
       success: true,
       deleted_count: result.rowCount,
-      message: 'ลบประวัติแชทแล้ว',
+      message: systemThread ? 'ล้างข้อความระบบแล้ว' : 'ลบประวัติแชทแล้ว',
     })
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/chat/messages/:messageId', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const messageId = req.params.messageId
+
+    const found = await pool.query(
+      `SELECT id, user_id, image_url FROM chat_messages WHERE id = $1 AND shop_id = $2`,
+      [messageId, shopId]
+    )
+    const message = found.rows[0]
+    if (!message) {
+      return res.status(404).json({ error: 'ไม่พบข้อความ' })
+    }
+
+    await requireChatUserAccess(pool, req.shop, message.user_id)
+
+    if (message.image_url) {
+      await deleteChatImageFile(shopId, message.image_url).catch(() => null)
+    }
+    await pool.query(`DELETE FROM chat_messages WHERE id = $1 AND shop_id = $2`, [messageId, shopId])
+
+    res.json({ success: true, id: messageId, message: 'ลบข้อความแล้ว' })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })

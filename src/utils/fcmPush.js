@@ -187,6 +187,52 @@ async function pushAfterCustomerChatNotify(pool, shopId, userId, { body, title =
   return sendPushToUser(pool, userId, payload)
 }
 
+function chatMessagePreview(body, imageUrl) {
+  const text = String(body || '').trim()
+  if (text) return text
+  return imageUrl ? '[รูปภาพ]' : 'ส่งข้อความถึงคุณ'
+}
+
+async function resolveUserName(pool, userId) {
+  if (!userId) return ''
+  const result = await pool.query(`SELECT name FROM users WHERE id = $1 LIMIT 1`, [userId])
+  return String(result.rows[0]?.name || '').trim()
+}
+
+async function pushAfterCustomerChatMessage(pool, shopId, { customerId, customerName, body, imageUrl = null, messageId = null }) {
+  const shop = await getShopPushContext(pool, shopId)
+  if (!shop || !customerId) return { ok: false, skipped: true, reason: 'missing_target' }
+
+  const name = String(customerName || '').trim() || await resolveUserName(pool, customerId)
+  const payload = buildChatPushPayload({
+    shopSlug: shop.slug,
+    title: `ข้อความใหม่จาก ${name || 'ลูกค้า'}`,
+    body: chatMessagePreview(body, imageUrl),
+    userId: customerId,
+    target: 'admin',
+  })
+  if (messageId) {
+    payload.data.messageId = String(messageId)
+  }
+  return sendPushToShopAdmins(pool, shopId, payload)
+}
+
+async function pushAfterAdminChatMessage(pool, shopId, customerId, { body, imageUrl = null, messageId = null }) {
+  const shop = await getShopPushContext(pool, shopId)
+  if (!shop || !customerId) return { ok: false, skipped: true, reason: 'missing_target' }
+
+  const payload = buildChatPushPayload({
+    shopSlug: shop.slug,
+    title: `ข้อความใหม่ · ${shop.name}`,
+    body: chatMessagePreview(body, imageUrl),
+    target: 'customer',
+  })
+  if (messageId) {
+    payload.data.messageId = String(messageId)
+  }
+  return sendPushToUser(pool, customerId, payload)
+}
+
 module.exports = {
   isFcmConfigured,
   sendPushToTokens,
@@ -194,5 +240,7 @@ module.exports = {
   sendPushToShopAdmins,
   pushAfterSystemChatNotify,
   pushAfterCustomerChatNotify,
+  pushAfterCustomerChatMessage,
+  pushAfterAdminChatMessage,
   buildChatPushPayload,
 }
