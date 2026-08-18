@@ -6,7 +6,9 @@ const { isFcmConfigured } = require('../utils/fcmPush')
 const {
   upsertFcmToken,
   disableFcmToken,
+  disableAllFcmTokensForUser,
   getUserPushStatus,
+  getTokenPushStatus,
 } = require('../utils/fcmTokens')
 
 router.use(resolveShop)
@@ -15,7 +17,10 @@ router.use(auth)
 router.get('/status', async (req, res) => {
   try {
     const pool = getPool()
-    const enabled = await getUserPushStatus(pool, req.user.id)
+    const token = String(req.query.token || '').trim()
+    const enabled = token
+      ? await getTokenPushStatus(pool, req.user.id, token)
+      : await getUserPushStatus(pool, req.user.id)
     res.json({
       configured: isFcmConfigured(),
       enabled,
@@ -50,6 +55,21 @@ router.post('/token', async (req, res) => {
       userAgent: String(req.headers['user-agent'] || '').slice(0, 500),
     })
     res.json({ ok: true, enabled: Boolean(row?.enabled) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/disable', async (req, res) => {
+  try {
+    const pool = getPool()
+    const token = String(req.body?.token || '').trim()
+    if (token) {
+      await disableFcmToken(pool, { userId: req.user.id, token })
+    } else {
+      await disableAllFcmTokensForUser(pool, req.user.id)
+    }
+    res.json({ ok: true, enabled: false })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

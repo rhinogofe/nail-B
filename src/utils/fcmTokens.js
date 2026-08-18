@@ -48,6 +48,34 @@ async function disableFcmToken(pool, { userId, token }) {
   return result.rows[0] || null
 }
 
+async function disableAllFcmTokensForUser(pool, userId) {
+  const result = await pool.query(
+    `
+      UPDATE fcm_tokens
+      SET enabled = false, updated_at = NOW()
+      WHERE user_id = $1 AND enabled = true
+      RETURNING id
+    `,
+    [userId]
+  )
+  return result.rowCount
+}
+
+async function getTokenPushStatus(pool, userId, token) {
+  if (!token) return false
+  const result = await pool.query(
+    `
+      SELECT EXISTS (
+        SELECT 1
+        FROM fcm_tokens
+        WHERE user_id = $1 AND token = $2 AND enabled = true
+      ) AS enabled
+    `,
+    [userId, token]
+  )
+  return Boolean(result.rows[0]?.enabled)
+}
+
 async function deleteFcmToken(pool, token) {
   await pool.query(`DELETE FROM fcm_tokens WHERE token = $1`, [token])
 }
@@ -106,8 +134,10 @@ module.exports = {
   ensureFcmTokensSchema,
   upsertFcmToken,
   disableFcmToken,
+  disableAllFcmTokensForUser,
   deleteFcmToken,
   getUserPushStatus,
+  getTokenPushStatus,
   getEnabledTokensForUser,
   getEnabledTokensForShopAdmins,
 }
