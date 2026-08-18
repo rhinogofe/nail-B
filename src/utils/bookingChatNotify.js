@@ -2,6 +2,7 @@ const { loadBookingNotifyContext, applyTemplate } = require('./bookingLineNotify
 const { getChatNotifySettings } = require('./chatNotifySettings')
 const { createChatMessage } = require('./chatMessages')
 const { ensureSystemChatUser } = require('./systemChatUser')
+const { pushAfterSystemChatNotify, pushAfterCustomerChatNotify } = require('./fcmPush')
 
 async function getShopAdminSenderId(poolOrClient, shopId) {
   const shopAdmin = await poolOrClient.query(
@@ -79,6 +80,12 @@ async function notifyAdminNewBookingChat(poolOrClient, shopId, bookingId) {
       body: text,
     })
     if (!row) return { ok: false, skipped: true, reason: 'empty_message' }
+    pushAfterSystemChatNotify(poolOrClient, shopId, {
+      title: 'มีคิวจองใหม่',
+      body: text,
+      relatedUserId: customerUserId,
+      messageId: row.id,
+    }).catch(() => null)
     return { ok: true, messageId: row.id }
   } catch (err) {
     console.error('notifyAdminNewBookingChat:', err.message)
@@ -113,6 +120,12 @@ async function notifyAdminUpcomingChat(poolOrClient, shopId, bookingId, minutesU
       body: text,
     })
     if (!row) return { ok: false, skipped: true, reason: 'empty_message' }
+    pushAfterSystemChatNotify(poolOrClient, shopId, {
+      title: 'ใกล้ถึงเวลาคิว',
+      body: text,
+      relatedUserId: customerUserId,
+      messageId: row.id,
+    }).catch(() => null)
     return { ok: true, messageId: row.id }
   } catch (err) {
     console.error('notifyAdminUpcomingChat:', err.message)
@@ -147,6 +160,11 @@ async function notifyCustomerUpcomingChat(poolOrClient, shopId, bookingId, minut
       body: text,
     })
     if (!row) return { ok: false, skipped: true, reason: 'empty_message' }
+    pushAfterCustomerChatNotify(poolOrClient, shopId, customerUserId, {
+      title: 'ใกล้ถึงเวลาคิว',
+      body: text,
+      messageId: row.id,
+    }).catch(() => null)
     return { ok: true, messageId: row.id }
   } catch (err) {
     console.error('notifyCustomerUpcomingChat:', err.message)
@@ -184,6 +202,14 @@ async function notifyBookingCancelledChat(poolOrClient, shopId, bookingId) {
         body: text,
       })
       results.admin = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+      if (row) {
+        pushAfterSystemChatNotify(poolOrClient, shopId, {
+          title: 'คิวถูกยกเลิก',
+          body: text,
+          relatedUserId: customerUserId,
+          messageId: row.id,
+        }).catch(() => null)
+      }
     }
     if (settings.cancelCustomerEnabled) {
       const text = applyTemplate(settings.cancelCustomerTemplate, ctx)
@@ -193,6 +219,13 @@ async function notifyBookingCancelledChat(poolOrClient, shopId, bookingId) {
         body: text,
       })
       results.customer = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+      if (row) {
+        pushAfterCustomerChatNotify(poolOrClient, shopId, customerUserId, {
+          title: 'คิวถูกยกเลิก',
+          body: text,
+          messageId: row.id,
+        }).catch(() => null)
+      }
     }
     return { ok: true, results }
   } catch (err) {
@@ -223,6 +256,14 @@ async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
         body: text,
       })
       results.admin = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+      if (row) {
+        pushAfterSystemChatNotify(poolOrClient, shopId, {
+          title: 'ชำระเงินแล้ว',
+          body: text,
+          relatedUserId: customerUserId,
+          messageId: row.id,
+        }).catch(() => null)
+      }
     }
     if (settings.paidCustomerEnabled) {
       const text = applyTemplate(settings.paidCustomerTemplate, ctx)
@@ -232,6 +273,13 @@ async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
         body: text,
       })
       results.customer = row ? { ok: true, messageId: row.id } : { ok: false, skipped: true }
+      if (row) {
+        pushAfterCustomerChatNotify(poolOrClient, shopId, customerUserId, {
+          title: 'ชำระเงินแล้ว',
+          body: text,
+          messageId: row.id,
+        }).catch(() => null)
+      }
     }
     return { ok: true, results }
   } catch (err) {

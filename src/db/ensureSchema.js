@@ -597,9 +597,15 @@ async function ensureSchema() {
   console.log('✅ PostgreSQL schema ready')
 }
 
+async function ensureFcmTokensSchema(pool) {
+  const { ensureFcmTokensSchema: ensureTable } = require('../utils/fcmTokens')
+  await ensureTable(pool)
+}
+
 module.exports = {
   ensureSchema,
   ensureShopUsageColumns,
   ensureServiceCategoriesSchema,
   ensureChatNotifySchema,
+  ensureFcmTokensSchema,
 }

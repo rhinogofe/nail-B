@@ -9,6 +9,7 @@ const {
   ensureShopUsageColumns,
   ensureServiceCategoriesSchema,
   ensureChatNotifySchema,
+  ensureFcmTokensSchema,
 } = require('./db/ensureSchema')
 const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
@@ -33,6 +34,7 @@ app.use('/api/admin',    require('./routes/admin'))
 app.use('/api/coupons',  require('./routes/coupons'))
 app.use('/api/reviews',  require('./routes/reviews'))
 app.use('/api/chat',     require('./routes/chat'))
+app.use('/api/push',     require('./routes/push'))
 
 app.get('/health', (req, res) => {
   res.json({
@@ -60,6 +62,7 @@ async function startServer() {
     await ensureShopUsageColumns(pool)
     await ensureServiceCategoriesSchema(pool)
     await ensureChatNotifySchema(pool)
+    await ensureFcmTokensSchema(pool)
   } catch (err) {
     console.error('⚠️ Critical schema migration:', err.message)
   }
