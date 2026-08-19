@@ -16,7 +16,12 @@ const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 const { processUpcomingBookingReminders } = require('./utils/bookingUpcomingReminders')
 const { expireOldChatImages } = require('./utils/chatImages')
 const { logLineBotTokenStatus } = require('./utils/linePushSettings')
-const { ensureUploadDirs, getUploadRoot } = require('./utils/uploadPaths')
+const {
+  ensureUploadDirs,
+  getUploadRoot,
+  recordStorageMarker,
+  getStorageMarker,
+} = require('./utils/uploadPaths')
 
 const app = express()
 
@@ -37,9 +42,13 @@ app.use('/api/chat',     require('./routes/chat'))
 app.use('/api/push',     require('./routes/push'))
 
 app.get('/health', (req, res) => {
+  const marker = getStorageMarker()
   res.json({
     status: 'ok',
     upload_root: getUploadRoot(),
+    upload_persistent: marker.persistent,
+    upload_first_seen_at: marker.firstSeenAt,
+    upload_boot_count: marker.bootCount,
   })
 })
 
@@ -67,8 +76,10 @@ async function startServer() {
     console.error('⚠️ Critical schema migration:', err.message)
   }
 
+  let storage = getStorageMarker()
   try {
     await ensureUploadDirs()
+    storage = await recordStorageMarker()
   } catch (err) {
     console.error('⚠️ Upload directory warning:', err.message)
   }
@@ -76,6 +87,11 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`🚀 Server running at http://localhost:${PORT}`)
     console.log(`📁 Upload root: ${getUploadRoot()}`)
+    if (storage.bootCount > 1) {
+      console.log(`💾 Storage persists across restarts (boot #${storage.bootCount}, since ${storage.firstSeenAt})`)
+    } else {
+      console.warn('⚠️ Storage looks empty on boot — attach a Render Persistent Disk at UPLOAD_ROOT or uploaded images will be lost on every deploy')
+    }
     logLineBotTokenStatus()
   })
 
