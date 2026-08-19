@@ -109,6 +109,7 @@ async function getEnabledTokensForShopAdmins(pool, shopId) {
     `
       SELECT DISTINCT ft.token
       FROM fcm_tokens ft
+      JOIN users u ON u.id = ft.user_id
       WHERE ft.enabled = true
         AND (
           EXISTS (
@@ -116,12 +117,15 @@ async function getEnabledTokensForShopAdmins(pool, shopId) {
             FROM shop_admins sa
             WHERE sa.user_id = ft.user_id AND sa.shop_id = $1
           )
-          OR EXISTS (
-            SELECT 1
-            FROM shop_admins sa_default
-            JOIN shops s_default ON s_default.id = sa_default.shop_id
-            WHERE sa_default.user_id = ft.user_id
-              AND s_default.slug = 'default'
+          OR (
+            u.receive_all_shop_push = true
+            AND EXISTS (
+              SELECT 1
+              FROM shop_admins sa_default
+              JOIN shops s_default ON s_default.id = sa_default.shop_id
+              WHERE sa_default.user_id = ft.user_id
+                AND s_default.slug = 'default'
+            )
           )
         )
     `,

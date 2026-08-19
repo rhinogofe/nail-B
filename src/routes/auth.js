@@ -247,6 +247,7 @@ router.get('/me', auth, async (req, res) => {
           u.provider,
           u.provider_id,
           u.is_admin,
+          u.receive_all_shop_push,
           u.total_points,
           u.created_at,
           COUNT(b.id)::int AS total_bookings,
@@ -255,7 +256,7 @@ router.get('/me', auth, async (req, res) => {
         FROM users u
         LEFT JOIN bookings b ON b.user_id = u.id
         WHERE u.id = $1
-        GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.is_admin, u.total_points, u.created_at
+        GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.is_admin, u.receive_all_shop_push, u.total_points, u.created_at
       `,
       [req.user.id]
     )

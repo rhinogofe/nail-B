@@ -268,6 +268,7 @@ async function ensureSchema() {
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS start_minute SMALLINT NOT NULL DEFAULT 0;
     ALTER TABLE bookings ADD COLUMN IF NOT EXISTS end_minute SMALLINT NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_all_shop_push BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
     ALTER TABLE showcase_clips ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'tiktok';
   `)
