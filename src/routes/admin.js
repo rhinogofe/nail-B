@@ -2322,10 +2322,16 @@ router.get('/users', async (req, res) => {
     const pool = getPool()
     const shopId = req.shop.id
     const showAllUsers = req.shop.slug === 'default'
-    const branchScope = showAllUsers
-      ? ''
-      : `
-        WHERE EXISTS (
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200)
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
+    const q = String(req.query.q || '').trim()
+
+    const params = [shopId]
+    const filters = []
+
+    if (!showAllUsers) {
+      filters.push(`(
+        EXISTS (
           SELECT 1 FROM shop_admins sa_scope
           WHERE sa_scope.user_id = u.id AND sa_scope.shop_id = $1
         )
@@ -2333,42 +2339,81 @@ router.get('/users', async (req, res) => {
           SELECT 1 FROM bookings b_scope
           WHERE b_scope.user_id = u.id AND b_scope.shop_id = $1
         )
-      `
-    const result = await pool.query(
-      `
-      SELECT
-        u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note,
-        u.is_admin, u.total_points, u.created_at,
-        COUNT(b.id)::int AS total_bookings,
-        SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
-        SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings,
-        (
-          SELECT bool_or(s.slug = 'default')
-          FROM shop_admins sa
-          JOIN shops s ON s.id = sa.shop_id
-          WHERE sa.user_id = u.id
-        ) AS is_super_admin,
-        (
-          SELECT s.slug
-          FROM shop_admins sa
-          JOIN shops s ON s.id = sa.shop_id
-          WHERE sa.user_id = u.id
-          ORDER BY CASE WHEN s.slug = 'default' THEN 0 ELSE 1 END, s.slug
-          LIMIT 1
-        ) AS admin_shop_slug
-      FROM users u
-      LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
-      ${branchScope}
-      GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
-      ORDER BY u.is_admin DESC, u.total_points DESC
-    `,
-      [shopId]
+      )`)
+    }
+
+    if (q) {
+      params.push(`%${q}%`)
+      const searchParam = `$${params.length}`
+      filters.push(`(
+        u.name ILIKE ${searchParam}
+        OR COALESCE(u.email, '') ILIKE ${searchParam}
+        OR COALESCE(u.provider_id, '') ILIKE ${searchParam}
+      )`)
+    }
+
+    const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+
+    const baseCte = `
+      WITH user_stats AS (
+        SELECT
+          u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note,
+          u.is_admin, u.total_points, u.created_at,
+          COUNT(b.id)::int AS total_bookings,
+          SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
+          SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings,
+          (
+            SELECT bool_or(s.slug = 'default')
+            FROM shop_admins sa
+            JOIN shops s ON s.id = sa.shop_id
+            WHERE sa.user_id = u.id
+          ) AS is_super_admin,
+          (
+            SELECT s.slug
+            FROM shop_admins sa
+            JOIN shops s ON s.id = sa.shop_id
+            WHERE sa.user_id = u.id
+            ORDER BY CASE WHEN s.slug = 'default' THEN 0 ELSE 1 END, s.slug
+            LIMIT 1
+          ) AS admin_shop_slug
+        FROM users u
+        LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
+        ${whereClause}
+        GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at
+      )
+    `
+
+    const countResult = await pool.query(
+      `${baseCte} SELECT COUNT(*)::int AS total FROM user_stats`,
+      params
     )
-    res.json(result.rows.map((row) => ({
+    const total = countResult.rows[0]?.total ?? 0
+
+    params.push(limit, offset)
+    const limitParam = `$${params.length - 1}`
+    const offsetParam = `$${params.length}`
+
+    const result = await pool.query(
+      `${baseCte}
+       SELECT * FROM user_stats
+       ORDER BY is_admin DESC, total_points DESC, created_at DESC
+       LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      params
+    )
+
+    const users = result.rows.map((row) => ({
       ...row,
       is_super_admin: Boolean(row.is_super_admin),
       admin_shop_slug: row.is_admin ? (row.admin_shop_slug || null) : null,
-    })))
+    }))
+
+    res.json({
+      users,
+      total,
+      limit,
+      offset,
+      has_more: offset + users.length < total,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
