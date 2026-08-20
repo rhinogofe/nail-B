@@ -129,9 +129,21 @@ router.post('/register-shop', auth, async (req, res) => {
   const ui = req.body?.ui && typeof req.body.ui === 'object' ? req.body.ui : {}
   const registerPin = req.body?.register_pin
 
-  const optionalEmptyKeys = new Set(['ui_logo_url', 'ui_hero_image_url'])
+  const registerRequiredUiKeys = new Set([
+    'ui_brand_main',
+    'ui_brand_accent',
+    'ui_tagline',
+    'ui_page_title',
+    'ui_shop_address_detail',
+    'ui_shop_location_nav_label',
+    'ui_shop_location_page_title',
+    'ui_line_chat_url',
+    'ui_bank_name',
+    'ui_bank_account_name',
+    'ui_bank_account_no',
+  ])
   const missing = UI_KEYS.filter((key) => {
-    if (optionalEmptyKeys.has(key)) return false
+    if (!registerRequiredUiKeys.has(key)) return false
     return !String(ui[key] ?? '').trim()
   })
   if (!shopName) {
