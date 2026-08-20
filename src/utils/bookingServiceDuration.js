@@ -6,8 +6,10 @@ const {
   toMinutes,
   normalizeMinute,
   normalizeSlotInput,
+  normalizeStartSlotInput,
   matchesDayWindowStart,
   matchesDayWindowSlot,
+  resolveStrictSlotFromStart,
 } = require('./bookingSlotTimes')
 const { sumOptionDurationMinutes } = require('./bookingOptions')
 
@@ -121,7 +123,7 @@ async function validateBookingStartSlot(
     )
   }
 
-  if (baseSlot.startMinute !== 0 || baseSlot.endMinute !== 0) {
+  if (baseSlot.startMinute !== 0) {
     return 'วันนี้ใช้เวลาเปิด-ปิดปกติ (เต็มชั่วโมง)'
   }
 
@@ -165,20 +167,31 @@ async function finalizeBookingSlotWithServices(
   if (startError) return { error: startError }
 
   if (!extendEnabled) {
-    const strictSlot = normalizeSlotInput(body, slotHours)
-    if (!strictSlot) return { error: 'ช่วงเวลาไม่ถูกต้อง' }
+    const startOnly = normalizeStartSlotInput(body, slotHours)
+    if (!startOnly) return { error: 'ช่วงเวลาไม่ถูกต้อง' }
 
     const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
     if (dayWindows.length) {
-      if (!matchesDayWindowSlot(strictSlot, dayWindows)) {
+      if (!matchesDayWindowStart(startOnly, dayWindows)) {
         return { error: 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้' }
       }
-      return { slot: strictSlot, slotHours, totalServiceMinutes: 0 }
+    } else if (startOnly.startMinute !== 0) {
+      return { error: 'วันนี้ใช้เวลาเปิด-ปิดปกติ (เต็มชั่วโมง)' }
+    } else {
+      const { validateBookingStartHour } = require('./bookingHours')
+      const hourError = await validateBookingStartHour(
+        poolOrClient,
+        shopId,
+        bookingDate,
+        startOnly.startHour,
+        slotHours
+      )
+      if (hourError) return { error: hourError }
     }
 
-    const expectedEnd = baseSlot.startHour + normalizeBookingSlotHours(slotHours)
-    if (strictSlot.endHour !== expectedEnd || strictSlot.endMinute !== 0) {
-      return { error: `ช่วงเวลาต้องยาว ${normalizeBookingSlotHours(slotHours)} ชั่วโมง` }
+    const strictSlot = resolveStrictSlotFromStart(startOnly, dayWindows, slotHours)
+    if (!strictSlot) {
+      return { error: 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้' }
     }
     return { slot: strictSlot, slotHours, totalServiceMinutes: 0 }
   }

@@ -50,6 +50,53 @@ function matchesDayWindowStart(slot, dayWindows) {
   )
 }
 
+function findDayWindowForStart(slot, dayWindows) {
+  return (dayWindows || []).find((w) =>
+    Number(w.start_hour) === slot.startHour
+    && normalizeMinute(w.start_minute) === slot.startMinute
+  )
+}
+
+/** When extend-by-services is off, derive the canonical slot from start time only. */
+function resolveStrictSlotFromStart(baseSlot, dayWindows, slotHours = DEFAULT_SLOT_HOURS) {
+  if (!baseSlot) return null
+  const slotLen = normalizeBookingSlotHours(slotHours)
+
+  if (dayWindows?.length) {
+    const window = findDayWindowForStart(baseSlot, dayWindows)
+    if (!window) return null
+    return normalizeSlotInput(
+      {
+        start_hour: window.start_hour,
+        start_minute: window.start_minute ?? 0,
+        end_hour: window.end_hour,
+        end_minute: window.end_minute ?? 0,
+      },
+      slotHours
+    )
+  }
+
+  return normalizeSlotInput(
+    {
+      start_hour: baseSlot.startHour,
+      start_minute: baseSlot.startMinute ?? 0,
+      end_hour: baseSlot.startHour + slotLen,
+      end_minute: 0,
+    },
+    slotHours
+  )
+}
+
+function normalizeStartSlotInput(body, slotHours = DEFAULT_SLOT_HOURS) {
+  return normalizeSlotInput(
+    {
+      start_hour: body?.start_hour,
+      start_minute: body?.start_minute,
+    },
+    slotHours
+  )
+}
+
 function bookingRowToMinutes(row, slotHours = DEFAULT_SLOT_HOURS) {
   const slot = normalizeBookingSlotHours(slotHours)
   const startHour = Number(row.start_hour)
@@ -66,8 +113,11 @@ module.exports = {
   toMinutes,
   normalizeMinute,
   normalizeSlotInput,
+  normalizeStartSlotInput,
   rangesOverlap,
   matchesDayWindowSlot,
   matchesDayWindowStart,
+  findDayWindowForStart,
+  resolveStrictSlotFromStart,
   bookingRowToMinutes,
 }

@@ -180,6 +180,38 @@ test('โหมด 1b: เวลาปกติ + ขยายบริการ
 
 // ─── 2. เวลาเฉพาะวัน ───────────────────────────────────────────────────────
 
+test('โหมด 2a: เวลาเฉพาะวัน + ไม่ขยาย — แก้บริการคิวที่เคยขยายเวลา (end เก่าไม่ตรงช่วงวัน)', async () => {
+  const client = createMockBookingDb({
+    settings: { extend_booking_by_services: 'false' },
+    dayHours: { [CUSTOM_DATE]: CUSTOM_WINDOWS },
+    bookings: [
+      {
+        id: 101,
+        shop_id: SHOP_ID,
+        booking_date: CUSTOM_DATE,
+        start_hour: 17,
+        start_minute: 30,
+        end_hour: 19,
+        end_minute: 15,
+        status: 'pending',
+      },
+    ],
+  })
+
+  const edit = await runEdit(
+    client,
+    101,
+    CUSTOM_DATE,
+    { start_hour: 17, start_minute: 30, end_hour: 19, end_minute: 15 },
+    [1, 2]
+  )
+  assert.equal(edit.ok, true, edit.error)
+  assert.equal(edit.slot.startHour, 17)
+  assert.equal(edit.slot.startMinute, 30)
+  assert.equal(edit.slot.endHour, 19)
+  assert.equal(edit.slot.endMinute, 30, 'snap กลับช่วงวัน 17:30–19:30')
+})
+
 test('โหมด 2a: เวลาเฉพาะวัน + ไม่ขยาย — จอง / แก้บริการ / ย้ายไปวันปกติ', async () => {
   const client = createMockBookingDb({
     settings: { extend_booking_by_services: 'false' },

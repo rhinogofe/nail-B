@@ -3,8 +3,10 @@ const { normalizeBookingSlotHours, DEFAULT_SLOT_HOURS } = require('./bookingSlot
 const { getDayHoursForDate } = require('./bookingDayHours')
 const {
   normalizeSlotInput,
+  normalizeStartSlotInput,
   matchesDayWindowSlot,
   matchesDayWindowStart,
+  resolveStrictSlotFromStart,
 } = require('./bookingSlotTimes')
 const { getExtendByServicesSetting } = require('./extendBookingSettings')
 
@@ -86,7 +88,9 @@ async function validateBookingSlot(
   if (dayWindows.length) {
     const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
     if (!extendEnabled) {
-      if (!matchesDayWindowSlot(slot, dayWindows)) {
+      const startOnly = normalizeStartSlotInput(body, slotHours)
+      if (!startOnly) return 'ช่วงเวลาไม่ถูกต้อง'
+      if (!matchesDayWindowStart(startOnly, dayWindows)) {
         return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
       }
       return null
@@ -116,7 +120,10 @@ async function validateBookingSlot(
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
 
   if (!extendEnabled) {
-    if (slot.startMinute !== 0 || slot.endMinute !== 0) {
+    const startOnly = normalizeStartSlotInput(body, slotHours)
+    if (!startOnly) return 'ช่วงเวลาไม่ถูกต้อง'
+
+    if (startOnly.startMinute !== 0) {
       return 'วันนี้ใช้เวลาเปิด-ปิดปกติ (เต็มชั่วโมง)'
     }
 
@@ -124,15 +131,10 @@ async function validateBookingSlot(
       poolOrClient,
       shopId,
       bookingDate,
-      slot.startHour,
+      startOnly.startHour,
       slotHours
     )
     if (hourError) return hourError
-
-    const expectedEndHour = slot.startHour + normalizeBookingSlotHours(slotHours)
-    if (slot.endHour !== expectedEndHour || slot.endMinute !== 0) {
-      return `ช่วงเวลาต้องยาว ${normalizeBookingSlotHours(slotHours)} ชั่วโมง`
-    }
     return null
   }
 
