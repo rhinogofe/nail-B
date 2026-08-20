@@ -3315,13 +3315,22 @@ router.delete('/nailoptions/:id', async (req, res) => {
 
 // ─── Service locations (ปุ่มลัดเพิ่มสถานที่) ─────────────────
 
+function normalizeMapUrl(value) {
+  const url = String(value ?? '').trim()
+  if (!url) return { value: null }
+  if (!/^https?:\/\//i.test(url)) {
+    return { error: 'ลิงก์แผนที่ต้องขึ้นต้องด้วย http:// หรือ https://' }
+  }
+  return { value: url }
+}
+
 router.get('/service-locations', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
     const result = await pool.query(
       `
-      SELECT id, name, color, description, sort_order, is_active, created_at, updated_at
+      SELECT id, name, color, description, map_url, sort_order, is_active, created_at, updated_at
       FROM service_locations
       WHERE shop_id = $1
       ORDER BY sort_order ASC, name ASC
@@ -3340,20 +3349,22 @@ router.post('/service-locations', async (req, res) => {
   const colorParsed = parseOptionalColor(req.body?.color || '#3b82f6')
   const sort_order = Number(req.body?.sort_order ?? 0)
   const is_active = req.body?.is_active !== false
+  const mapUrlParsed = normalizeMapUrl(req.body?.map_url)
 
   if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อสถานที่' })
   if (colorParsed?.error) return res.status(400).json({ error: colorParsed.error })
+  if (mapUrlParsed.error) return res.status(400).json({ error: mapUrlParsed.error })
 
   try {
     const pool = getPool()
     const shopId = req.shop.id
     const result = await pool.query(
       `
-        INSERT INTO service_locations (shop_id, name, color, description, sort_order, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, name, color, description, sort_order, is_active, created_at, updated_at
+        INSERT INTO service_locations (shop_id, name, color, description, map_url, sort_order, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, name, color, description, map_url, sort_order, is_active, created_at, updated_at
       `,
-      [shopId, name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active]
+      [shopId, name, colorParsed, description || `สถานที่ให้บริการ ${name}`, mapUrlParsed.value, sort_order, is_active]
     )
     res.status(201).json({ success: true, location: result.rows[0] })
   } catch (err) {
@@ -3370,9 +3381,11 @@ router.patch('/service-locations/:id', async (req, res) => {
   const colorParsed = parseOptionalColor(req.body?.color)
   const sort_order = Number(req.body?.sort_order ?? 0)
   const is_active = Boolean(req.body?.is_active)
+  const mapUrlParsed = normalizeMapUrl(req.body?.map_url)
 
   if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อสถานที่' })
   if (colorParsed?.error) return res.status(400).json({ error: colorParsed.error })
+  if (mapUrlParsed.error) return res.status(400).json({ error: mapUrlParsed.error })
 
   try {
     const pool = getPool()
@@ -3384,13 +3397,14 @@ router.patch('/service-locations/:id', async (req, res) => {
           name = $1,
           color = $2,
           description = $3,
-          sort_order = $4,
-          is_active = $5,
+          map_url = $4,
+          sort_order = $5,
+          is_active = $6,
           updated_at = NOW()
-        WHERE id = $6 AND shop_id = $7
-        RETURNING id, name, color, description, sort_order, is_active, created_at, updated_at
+        WHERE id = $7 AND shop_id = $8
+        RETURNING id, name, color, description, map_url, sort_order, is_active, created_at, updated_at
       `,
-      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, sort_order, is_active, req.params.id, shopId]
+      [name, colorParsed, description || `สถานที่ให้บริการ ${name}`, mapUrlParsed.value, sort_order, is_active, req.params.id, shopId]
     )
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบสถานที่' })

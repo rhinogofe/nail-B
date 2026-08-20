@@ -141,7 +141,7 @@ router.get('/options', auth, async (req, res) => {
       `
     }
 
-    const [categoriesRes, optionsRes] = await Promise.all([
+    const [categoriesRes, optionsRes, locationsRes] = await Promise.all([
       pool.query(
         `
           SELECT id, name, description, sort_order
@@ -165,11 +165,21 @@ router.get('/options', auth, async (req, res) => {
         `,
         params
       ),
+      pool.query(
+        `
+          SELECT name, map_url, color, description
+          FROM service_locations
+          WHERE shop_id = $1 AND is_active = true
+          ORDER BY sort_order ASC, name ASC
+        `,
+        [shopId]
+      ),
     ])
 
     res.json({
       categories: categoriesRes.rows,
       options: optionsRes.rows,
+      locations: locationsRes.rows,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -477,6 +487,25 @@ router.get('/:id/payment-info', auth, async (req, res) => {
     const booking = result.rows[0]
     const expired = isBookingExpired(booking.created_at, settings.expireHours, settings.enabled)
 
+    const locationRes = await pool.query(
+      `
+        SELECT sl.name, sl.map_url
+        FROM booking_nailoptions bn
+        JOIN nailoption n ON n.id = bn.nailoption_id AND n.shop_id = $2
+        LEFT JOIN service_locations sl
+          ON sl.shop_id = $2
+         AND sl.name = n.option_name
+         AND sl.is_active = true
+        WHERE bn.booking_id = $1
+          AND n.is_required = true
+        ORDER BY n.option_name ASC
+        LIMIT 1
+      `,
+      [booking.id, req.shop.id]
+    )
+    const locationRow = locationRes.rows[0] || null
+    const locationMapUrl = String(locationRow?.map_url || '').trim()
+
     if (expired && booking.status === 'awaiting_payment') {
       await pool.query(
         `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND status = 'awaiting_payment'`,
@@ -487,6 +516,8 @@ router.get('/:id/payment-info', auth, async (req, res) => {
 
     res.json({
       booking,
+      location_name: locationRow?.name || null,
+      location_map_url: locationMapUrl || null,
       unpaid_expire: {
         enabled: settings.enabled,
         expire_hours: settings.expireHours,

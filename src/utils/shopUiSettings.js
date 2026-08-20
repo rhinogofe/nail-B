@@ -7,6 +7,12 @@ const UI_DEFAULTS = {
   ui_page_title: 'Nail Thuean',
   ui_logo_url: '',
   ui_hero_image_url: '',
+  ui_shop_map_url: '',
+  ui_shop_map_embed_url: '',
+  ui_shop_address_detail: '',
+  ui_shop_location_nav_label: 'ที่อยู่ร้าน',
+  ui_shop_location_page_title: 'ที่อยู่ร้าน',
+  ui_shop_open_maps_btn: 'เปิดใน Google Maps',
 
   ui_line_chat_url: 'https://line.me',
   ui_bank_name: 'ธนาคารกสิกรไทย',

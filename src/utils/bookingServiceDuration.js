@@ -3,6 +3,8 @@ const { getShopHours } = require('./bookingHours')
 const { normalizeBookingSlotHours } = require('./bookingSlotHours')
 const { getExtendByServicesSetting, getExtendPastCloseSetting } = require('./extendBookingSettings')
 const {
+  toMinutes,
+  normalizeMinute,
   normalizeSlotInput,
   matchesDayWindowStart,
   matchesDayWindowSlot,

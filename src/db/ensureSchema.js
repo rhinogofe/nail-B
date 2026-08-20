@@ -471,6 +471,7 @@ async function ensureSchema() {
   `)
 
   await pool.query(`ALTER TABLE service_locations DROP CONSTRAINT IF EXISTS service_locations_name_key`)
+  await pool.query(`ALTER TABLE service_locations ADD COLUMN IF NOT EXISTS map_url TEXT`)
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_service_locations_shop_name
       ON service_locations (shop_id, name)
