@@ -2236,7 +2236,7 @@ router.patch('/bookings/:id', async (req, res) => {
           effectiveDate,
           slotBody,
           slotHours,
-          null
+          req.params.id
         )
         if (slotError) {
           throw { status: 400, message: slotError }
@@ -2248,7 +2248,7 @@ router.patch('/bookings/:id', async (req, res) => {
           effectiveDate,
           slotBody,
           effectiveOptionIds,
-          null
+          req.params.id
         )
         if (finalized.error) {
           throw { status: 400, message: finalized.error }
