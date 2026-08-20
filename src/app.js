@@ -15,6 +15,7 @@ const { getPool } = require('./db/pool')
 const { expireUnpaidBookings } = require('./utils/unpaidExpire')
 const { processUpcomingBookingReminders } = require('./utils/bookingUpcomingReminders')
 const { expireOldChatImages } = require('./utils/chatImages')
+const { expireBookingPaymentSlips } = require('./utils/expireBookingPaymentSlips')
 const { logLineBotTokenStatus } = require('./utils/linePushSettings')
 const {
   ensureUploadDirs,
@@ -132,6 +133,19 @@ async function startServer() {
 
   runChatImageCleanup()
   setInterval(runChatImageCleanup, 60 * 60 * 1000)
+
+  async function runBookingSlipCleanup() {
+    try {
+      const pool = getPool()
+      const count = await expireBookingPaymentSlips(pool)
+      if (count > 0) console.log(`🧾 Removed ${count} expired booking payment slip(s)`)
+    } catch (err) {
+      console.error('expireBookingPaymentSlips:', err.message)
+    }
+  }
+
+  runBookingSlipCleanup()
+  setInterval(runBookingSlipCleanup, 60 * 60 * 1000)
 }
 
 startServer()

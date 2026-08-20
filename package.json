@@ -6,6 +6,7 @@
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
     "test": "node --test test/**/*.test.js",
+    "test:unit": "node --test test/**/*.test.js --test-reporter spec",
     "test:admin-api": "node --test test/admin-api.test.js"
   },
   "dependencies": {

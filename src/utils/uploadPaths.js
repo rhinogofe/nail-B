@@ -19,6 +19,8 @@ function getChatUploadRoot() {
 async function ensureUploadDirs() {
   await fs.mkdir(getUiUploadRoot(), { recursive: true })
   await fs.mkdir(getChatUploadRoot(), { recursive: true })
+  await fs.mkdir(path.join(getUploadRoot(), 'renewal'), { recursive: true })
+  await fs.mkdir(path.join(getUploadRoot(), 'booking-slips'), { recursive: true })
 }
 
 // Without a Render Persistent Disk mounted at UPLOAD_ROOT the folder is wiped on

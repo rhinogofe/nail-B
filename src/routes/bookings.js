@@ -10,7 +10,7 @@ const {
 } = require('../utils/bookingOptions')
 const { finalizeBookingSlotWithServices } = require('../utils/bookingServiceDuration')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
-const { notifyAdminNewBookingChat, notifyBookingCancelledChat } = require('../utils/bookingChatNotify')
+const { notifyAdminNewBookingChat, notifyBookingCancelledChat, notifyAdminPaymentSlipChat } = require('../utils/bookingChatNotify')
 const { emitBookingChanged } = require('../utils/bookingEvents')
 const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
@@ -23,6 +23,63 @@ const {
   isBookingExpired,
   expireUnpaidBookings,
 } = require('../utils/unpaidExpire')
+const {
+  parseBase64Image,
+  saveBookingPaymentSlip,
+  deleteBookingPaymentSlip,
+  deletePaymentSlipByBookingId,
+  isPaymentSlipUploadEnabled,
+  readBookingPaymentSlip,
+  MIME_EXT: SLIP_MIME_EXT,
+} = require('../utils/bookingPaymentSlips')
+
+function mapCustomerSlipRow(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    booking_id: row.booking_id,
+    status: row.status,
+    slip_filename: row.slip_filename,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+async function fetchCustomerBookingSlip(pool, bookingId, shopId, userId) {
+  const result = await pool.query(
+    `
+      SELECT bps.id, bps.booking_id, bps.status, bps.slip_filename, bps.created_at, bps.updated_at
+      FROM booking_payment_slips bps
+      JOIN bookings b ON b.id = bps.booking_id
+      WHERE bps.booking_id = $1 AND bps.shop_id = $2 AND b.user_id = $3
+      LIMIT 1
+    `,
+    [bookingId, shopId, userId]
+  )
+  return result.rows[0] || null
+}
+
+async function assertCustomerAwaitingPaymentBooking(pool, bookingId, shopId, userId) {
+  await expireUnpaidBookings(pool, shopId)
+  const settings = await getUnpaidExpireSettings(pool, shopId)
+  const bookingRes = await pool.query(
+    `
+      SELECT id, status, created_at
+      FROM bookings
+      WHERE id = $1 AND shop_id = $2 AND user_id = $3
+    `,
+    [bookingId, shopId, userId]
+  )
+  const booking = bookingRes.rows[0]
+  if (!booking) return { error: 'ไม่พบคิว', status: 404 }
+  if (booking.status !== 'awaiting_payment') {
+    return { error: 'คิวนี้ไม่อยู่ในสถานะรอชำระเงิน', status: 400 }
+  }
+  if (isBookingExpired(booking.created_at, settings.expireHours, settings.enabled)) {
+    return { error: 'คิวหมดเวลาชำระแล้ว', status: 409 }
+  }
+  return { booking, settings }
+}
 
 router.use(resolveShop)
 
@@ -512,6 +569,13 @@ router.get('/:id/payment-info', auth, async (req, res) => {
         [booking.id]
       )
       booking.status = 'cancelled'
+      await deletePaymentSlipByBookingId(pool, booking.id)
+      notifyBookingCancelledChat(pool, req.shop.id, booking.id).catch(() => null)
+      emitBookingChanged(req.shop.id, {
+        type: 'auto_cancelled',
+        booking_id: booking.id,
+        booking_date: booking.booking_date,
+      })
     }
 
     res.json({
@@ -523,6 +587,152 @@ router.get('/:id/payment-info', auth, async (req, res) => {
         expire_hours: settings.expireHours,
       },
       is_expired: booking.status === 'cancelled' && expired,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/:id/payment-slip', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    const bookingId = req.params.id
+    const slip = await fetchCustomerBookingSlip(pool, bookingId, req.shop.id, req.user.id)
+    if (!slip) {
+      const owned = await pool.query(
+        `SELECT id FROM bookings WHERE id = $1 AND shop_id = $2 AND user_id = $3 LIMIT 1`,
+        [bookingId, req.shop.id, req.user.id]
+      )
+      if (!owned.rows[0]) return res.status(404).json({ error: 'ไม่พบคิว' })
+      return res.json({ slip: null })
+    }
+    res.json({ slip: mapCustomerSlipRow(slip) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/:id/payment-slip/file', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    const slip = await fetchCustomerBookingSlip(pool, req.params.id, req.shop.id, req.user.id)
+    if (!slip?.slip_filename) return res.status(404).json({ error: 'ไม่พบสลิป' })
+
+    const buffer = await readBookingPaymentSlip(slip.slip_filename)
+    if (!buffer) return res.status(404).json({ error: 'ไม่พบไฟล์สลิป' })
+
+    const ext = slip.slip_filename.split('.').pop()?.toLowerCase()
+    const mime = Object.entries(SLIP_MIME_EXT).find(([, v]) => v === ext)?.[0] || 'image/jpeg'
+    res.set('Cache-Control', 'private, max-age=3600')
+    res.type(mime)
+    res.send(buffer)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/:id/payment-slip', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    const bookingId = req.params.id
+    const access = await assertCustomerAwaitingPaymentBooking(pool, bookingId, req.shop.id, req.user.id)
+    if (access.error) return res.status(access.status || 400).json({ error: access.error })
+
+    const slip = await fetchCustomerBookingSlip(pool, bookingId, req.shop.id, req.user.id)
+    if (!slip) return res.status(404).json({ error: 'ไม่พบสลิป' })
+    if (slip.status === 'confirmed') {
+      return res.status(400).json({ error: 'ชำระเงินยืนยันแล้ว ไม่สามารถลบสลิปได้' })
+    }
+    if (slip.status !== 'pending' && slip.status !== 'cancelled') {
+      return res.status(400).json({ error: 'ลบสลิปไม่ได้ในสถานะนี้' })
+    }
+
+    await pool.query(`DELETE FROM booking_payment_slips WHERE id = $1`, [slip.id])
+    await deleteBookingPaymentSlip(slip.slip_filename)
+    res.json({ success: true, message: 'ลบสลิปแล้ว — อัปโหลดใหม่ได้' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/:id/payment-slip', auth, async (req, res) => {
+  const parsed = parseBase64Image(req.body?.image_data, req.body?.image_mime)
+  if (!parsed) return res.status(400).json({ error: 'ต้องอัปโหลดสลิปการชำระ' })
+  if (parsed.error) return res.status(400).json({ error: parsed.error })
+
+  try {
+    const pool = getPool()
+    const bookingId = req.params.id
+    const access = await assertCustomerAwaitingPaymentBooking(pool, bookingId, req.shop.id, req.user.id)
+    if (access.error) return res.status(access.status || 400).json({ error: access.error })
+    const booking = access.booking
+
+    const uploadEnabled = await isPaymentSlipUploadEnabled(pool, req.shop.id)
+    if (!uploadEnabled) {
+      return res.status(403).json({ error: 'ร้านปิดการอัปโหลดสลิปในระบบ กรุณาส่งสลิปทาง LINE' })
+    }
+
+    const existing = await pool.query(
+      `SELECT id, slip_filename, status FROM booking_payment_slips WHERE booking_id = $1 LIMIT 1`,
+      [booking.id]
+    )
+    const prev = existing.rows[0]
+    if (prev?.status === 'confirmed') {
+      return res.status(400).json({ error: 'ชำระเงินยืนยันแล้ว ไม่ต้องอัปโหลดสลิปซ้ำ' })
+    }
+    if (prev?.status === 'pending') {
+      return res.status(400).json({ error: 'มีสลิปรอตรวจอยู่แล้ว — กรุณาลบก่อนอัปโหลดใหม่' })
+    }
+
+    const slipFilename = await saveBookingPaymentSlip(parsed.buffer, parsed.ext)
+    if (prev?.slip_filename && prev.slip_filename !== slipFilename) {
+      await deleteBookingPaymentSlip(prev.slip_filename)
+    }
+
+    let row
+    if (prev) {
+      const updated = await pool.query(
+        `
+          UPDATE booking_payment_slips
+          SET
+            slip_filename = $1,
+            status = 'pending',
+            uploaded_by_user_id = $2,
+            reviewed_by_user_id = NULL,
+            reviewed_at = NULL,
+            created_at = NOW(),
+            updated_at = NOW()
+          WHERE booking_id = $3
+          RETURNING *
+        `,
+        [slipFilename, req.user.id, booking.id]
+      )
+      row = updated.rows[0]
+    } else {
+      const inserted = await pool.query(
+        `
+          INSERT INTO booking_payment_slips (
+            booking_id, shop_id, slip_filename, status, uploaded_by_user_id
+          )
+          VALUES ($1, $2, $3, 'pending', $4)
+          RETURNING *
+        `,
+        [booking.id, req.shop.id, slipFilename, req.user.id]
+      )
+      row = inserted.rows[0]
+    }
+
+    emitBookingChanged(req.shop.id, {
+      type: 'payment_slip_uploaded',
+      booking_id: booking.id,
+      booking_date: booking.booking_date,
+    })
+    notifyAdminPaymentSlipChat(pool, req.shop.id, booking.id).catch(() => null)
+
+    res.status(201).json({
+      success: true,
+      message: 'อัปโหลดสลิปแล้ว — รอแอดมินยืนยัน',
+      slip: mapCustomerSlipRow(row),
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -547,6 +757,8 @@ router.delete('/:id', auth, async (req, res) => {
 
     if (result.rowCount === 0)
       return res.status(404).json({ error: 'ไม่พบคิว หรือไม่สามารถยกเลิกได้' })
+
+    await deletePaymentSlipByBookingId(pool, req.params.id)
 
     res.json({ success: true })
     const row = result.rows[0]

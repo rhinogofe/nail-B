@@ -59,6 +59,7 @@ const {
   DEFAULT_CANCEL_CUSTOMER_TEMPLATE,
   DEFAULT_PAID_ADMIN_TEMPLATE,
   DEFAULT_PAID_CUSTOMER_TEMPLATE,
+  DEFAULT_SLIP_ADMIN_TEMPLATE,
 } = require('../utils/chatNotifySettings')
 const {
   getUnpaidExpireSettings,
@@ -718,6 +719,11 @@ router.patch('/bookings/:id/restore', async (req, res) => {
         `,
         [targetStatus, row.id, shopId]
       )
+
+      if (targetStatus === 'awaiting_payment') {
+        const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
+        await deletePaymentSlipByBookingId(client, row.id)
+      }
     })
 
     const message =
@@ -757,6 +763,9 @@ router.patch('/bookings/:id/cancel-unpaid', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบคิวที่รอชำระเงินให้ยกเลิก' })
     }
 
+    const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
+    await deletePaymentSlipByBookingId(pool, req.params.id)
+
     res.json({ success: true, message: 'ยกเลิกคิวที่ยังไม่ชำระเงินแล้ว' })
     const row = result.rows[0]
     emitBookingChanged(shopId, {
@@ -789,6 +798,9 @@ router.patch('/bookings/:id/cancel-paid', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบคิวที่ชำระแล้วให้ยกเลิก' })
     }
+
+    const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
+    await deletePaymentSlipByBookingId(pool, req.params.id)
 
     res.json({
       success: true,
@@ -826,6 +838,8 @@ router.delete('/bookings/:id', async (req, res) => {
         throw err
       }
       deletedDate = String(bookingRes.rows[0].booking_date).slice(0, 10)
+      const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
+      await deletePaymentSlipByBookingId(client, req.params.id)
       await client.query(`DELETE FROM point_logs WHERE booking_id = $1`, [req.params.id])
       const result = await client.query(
         `DELETE FROM bookings WHERE id = $1 AND shop_id = $2 AND status = 'cancelled'`,
@@ -1540,6 +1554,7 @@ router.get('/settings/chat-notify', async (req, res) => {
       cancel_customer_enabled: settings.cancelCustomerEnabled,
       paid_admin_enabled: settings.paidAdminEnabled,
       paid_customer_enabled: settings.paidCustomerEnabled,
+      slip_admin_enabled: settings.slipAdminEnabled,
       new_booking_template: settings.newBookingTemplate,
       upcoming_admin_template: settings.upcomingAdminTemplate,
       upcoming_customer_template: settings.upcomingCustomerTemplate,
@@ -1547,6 +1562,7 @@ router.get('/settings/chat-notify', async (req, res) => {
       cancel_customer_template: settings.cancelCustomerTemplate,
       paid_admin_template: settings.paidAdminTemplate,
       paid_customer_template: settings.paidCustomerTemplate,
+      slip_admin_template: settings.slipAdminTemplate,
       default_new_booking_template: DEFAULT_NEW_BOOKING_TEMPLATE,
       default_upcoming_admin_template: DEFAULT_UPCOMING_ADMIN_TEMPLATE,
       default_upcoming_customer_template: DEFAULT_UPCOMING_CUSTOMER_TEMPLATE,
@@ -1554,6 +1570,7 @@ router.get('/settings/chat-notify', async (req, res) => {
       default_cancel_customer_template: DEFAULT_CANCEL_CUSTOMER_TEMPLATE,
       default_paid_admin_template: DEFAULT_PAID_ADMIN_TEMPLATE,
       default_paid_customer_template: DEFAULT_PAID_CUSTOMER_TEMPLATE,
+      default_slip_admin_template: DEFAULT_SLIP_ADMIN_TEMPLATE,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1585,6 +1602,9 @@ router.patch('/settings/chat-notify', async (req, res) => {
     if (typeof req.body?.paid_customer_enabled === 'boolean') {
       partial.paidCustomerEnabled = req.body.paid_customer_enabled
     }
+    if (typeof req.body?.slip_admin_enabled === 'boolean') {
+      partial.slipAdminEnabled = req.body.slip_admin_enabled
+    }
     if (req.body?.upcoming_minutes != null) {
       partial.upcomingMinutes = req.body.upcoming_minutes
     }
@@ -1609,6 +1629,9 @@ router.patch('/settings/chat-notify', async (req, res) => {
     if (req.body?.paid_customer_template != null) {
       partial.paidCustomerTemplate = req.body.paid_customer_template
     }
+    if (req.body?.slip_admin_template != null) {
+      partial.slipAdminTemplate = req.body.slip_admin_template
+    }
     const settings = await setChatNotifySettings(pool, req.shop.id, partial)
     res.json({
       success: true,
@@ -1620,6 +1643,7 @@ router.patch('/settings/chat-notify', async (req, res) => {
       cancel_customer_enabled: settings.cancelCustomerEnabled,
       paid_admin_enabled: settings.paidAdminEnabled,
       paid_customer_enabled: settings.paidCustomerEnabled,
+      slip_admin_enabled: settings.slipAdminEnabled,
       new_booking_template: settings.newBookingTemplate,
       upcoming_admin_template: settings.upcomingAdminTemplate,
       upcoming_customer_template: settings.upcomingCustomerTemplate,
@@ -1627,6 +1651,7 @@ router.patch('/settings/chat-notify', async (req, res) => {
       cancel_customer_template: settings.cancelCustomerTemplate,
       paid_admin_template: settings.paidAdminTemplate,
       paid_customer_template: settings.paidCustomerTemplate,
+      slip_admin_template: settings.slipAdminTemplate,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1983,6 +2008,8 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
         `UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND shop_id = $2 AND status = 'awaiting_payment'`,
         [req.params.id, shopId]
       )
+      const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
+      await deletePaymentSlipByBookingId(pool, req.params.id)
       notifyBookingCancelledChat(pool, shopId, req.params.id).catch(() => null)
       emitBookingChanged(shopId, {
         type: 'auto_cancelled',
@@ -2008,6 +2035,9 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบคิวที่รอยืนยันชำระเงิน' })
     }
 
+    const { markBookingSlipConfirmed } = require('../utils/bookingPaymentSlips')
+    await markBookingSlipConfirmed(pool, req.params.id, req.user?.id ?? null)
+
     res.json({ success: true, message: 'ยืนยันชำระเงินแล้ว คิวพร้อมให้บริการ' })
     emitBookingChanged(shopId, {
       type: 'payment_confirmed',
@@ -2022,8 +2052,9 @@ router.patch('/bookings/:id/confirm-payment', async (req, res) => {
 
 router.patch('/bookings/:id/revert-payment', async (req, res) => {
   try {
+    const pool = getPool()
     const shopId = req.shop.id
-    const result = await getPool().query(
+    const result = await pool.query(
       `
         UPDATE bookings
         SET
@@ -2040,6 +2071,9 @@ router.patch('/bookings/:id/revert-payment', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบคิวที่ชำระแล้ว / รอให้บริการ' })
     }
+
+    const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
+    await deletePaymentSlipByBookingId(pool, req.params.id)
 
     res.json({
       success: true,
@@ -2192,7 +2226,7 @@ router.patch('/bookings/:id', async (req, res) => {
         if (req.body.end_hour != null) {
           slotBody.end_hour = req.body.end_hour
           slotBody.end_minute = req.body.end_minute ?? 0
-        } else if (row.end_hour != null) {
+        } else if (!hasStartHour && row.end_hour != null) {
           slotBody.end_hour = row.end_hour
           slotBody.end_minute = row.end_minute ?? 0
         }
@@ -2202,7 +2236,7 @@ router.patch('/bookings/:id', async (req, res) => {
           effectiveDate,
           slotBody,
           slotHours,
-          req.params.id
+          null
         )
         if (slotError) {
           throw { status: 400, message: slotError }
@@ -2214,7 +2248,7 @@ router.patch('/bookings/:id', async (req, res) => {
           effectiveDate,
           slotBody,
           effectiveOptionIds,
-          req.params.id
+          null
         )
         if (finalized.error) {
           throw { status: 400, message: finalized.error }
@@ -4023,6 +4057,40 @@ router.delete('/chat/messages/:messageId', async (req, res) => {
     res.json({ success: true, id: messageId, message: 'ลบข้อความแล้ว' })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.use('/usage-renewal', require('./adminUsageRenewal'))
+router.use('/bookings/payment-slips', require('./adminBookingPaymentSlips'))
+
+router.get('/settings/booking-slip-retention', async (req, res) => {
+  if (!req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้น' })
+  }
+  try {
+    const pool = getPool()
+    const {
+      getBookingSlipRetentionDays,
+      DEFAULT_RETENTION_DAYS,
+    } = require('../utils/bookingPaymentSlipSettings')
+    const retention_days = await getBookingSlipRetentionDays(pool, req.shop.id)
+    res.json({ retention_days, default_retention_days: DEFAULT_RETENTION_DAYS })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/booking-slip-retention', async (req, res) => {
+  if (!req.isSuperAdmin) {
+    return res.status(403).json({ error: 'เฉพาะแอดมินหลักเท่านั้น' })
+  }
+  try {
+    const pool = getPool()
+    const { setBookingSlipRetentionDays } = require('../utils/bookingPaymentSlipSettings')
+    const retention_days = await setBookingSlipRetentionDays(pool, req.shop.id, req.body?.retention_days)
+    res.json({ success: true, retention_days })
+  } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })

@@ -1,6 +1,7 @@
 const { getShopSettings } = require('./shopSettings')
 const { notifyBookingCancelledChat } = require('./bookingChatNotify')
 const { emitBookingChanged } = require('./bookingEvents')
+const { deletePaymentSlipByBookingId } = require('./bookingPaymentSlips')
 
 const DEFAULT_HOURS = 24
 const MIN_HOURS = 1
@@ -47,6 +48,7 @@ async function expireUnpaidBookings(poolOrClient, shopId = null) {
       [shopId, expireHours]
     )
     for (const row of result.rows) {
+      await deletePaymentSlipByBookingId(poolOrClient, row.id)
       notifyBookingCancelledChat(poolOrClient, row.shop_id, row.id).catch(() => null)
       emitBookingChanged(row.shop_id, {
         type: 'auto_cancelled',

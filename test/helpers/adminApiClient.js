@@ -33,11 +33,17 @@ function buildAdminGetTests(ymd, ym) {
     { name: 'settings-extend', path: '/api/admin/settings/extend-booking-by-services' },
     { name: 'settings-ui', path: '/api/admin/settings/ui' },
     { name: 'settings-register-pin', path: '/api/admin/settings/register-pin' },
+    { name: 'settings-slip-retention', path: '/api/admin/settings/booking-slip-retention' },
+    { name: 'payment-slips', path: '/api/admin/bookings/payment-slips' },
+    { name: 'usage-renewal-settings', path: '/api/admin/usage-renewal/settings' },
+    { name: 'usage-renewal-submissions', path: '/api/admin/usage-renewal/submissions' },
     { name: 'chat-conversations', path: '/api/admin/chat/conversations' },
     { name: 'chat-unread', path: '/api/admin/chat/unread-count' },
     { name: 'chat-notifications', path: '/api/admin/chat/notifications' },
     { name: 'bookings-options', path: '/api/bookings/options', params: { date: ymd } },
     { name: 'bookings-shop-hours', path: '/api/bookings/shop-hours' },
+    { name: 'bookings-unpaid-expire', path: '/api/bookings/unpaid-expire-setting' },
+    { name: 'bookings-ui-settings', path: '/api/bookings/ui-settings' },
     { name: 'bookings-day', path: '/api/bookings', params: { date: ymd } },
   ]
 }

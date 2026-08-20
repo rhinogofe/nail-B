@@ -8,6 +8,69 @@ async function ensureShopUsageColumns(pool) {
   await db.query(`ALTER TABLE shops ADD COLUMN IF NOT EXISTS usage_started_at TIMESTAMPTZ`)
 }
 
+async function ensureUsageRenewalSchema(pool) {
+  const db = pool || await getPool()
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS usage_renewal_submissions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      months INT NOT NULL CHECK (months >= 1 AND months <= 12),
+      amount_baht INT NOT NULL CHECK (amount_baht > 0),
+      slip_filename TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'cancelled')),
+      admin_note TEXT,
+      created_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `)
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_usage_renewal_submissions_shop
+      ON usage_renewal_submissions (shop_id, created_at DESC);
+  `)
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_usage_renewal_submissions_status
+      ON usage_renewal_submissions (status, created_at DESC);
+  `)
+  await db.query(`ALTER TABLE usage_renewal_submissions ADD COLUMN IF NOT EXISTS option_id TEXT`)
+  await db.query(`ALTER TABLE usage_renewal_submissions ADD COLUMN IF NOT EXISTS option_label TEXT`)
+  await db.query(`ALTER TABLE usage_renewal_submissions ADD COLUMN IF NOT EXISTS includes_line_push BOOLEAN`)
+}
+
+async function ensureBookingPaymentSlipsSchema(pool) {
+  const db = pool || await getPool()
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS booking_payment_slips (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      slip_filename TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'cancelled')),
+      uploaded_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `)
+  await db.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_payment_slips_booking
+      ON booking_payment_slips (booking_id);
+  `)
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_payment_slips_shop_created
+      ON booking_payment_slips (shop_id, created_at DESC);
+  `)
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_payment_slips_status
+      ON booking_payment_slips (status, created_at DESC);
+  `)
+}
+
 async function ensureChatNotifySchema(pool) {
   const db = pool || await getPool()
   const chatExists = await db.query(`SELECT to_regclass('public.chat_messages') AS reg`)
@@ -398,6 +461,8 @@ async function ensureSchema() {
 
   await ensureChatNotifySchema(pool)
   await ensureShopUsageColumns(pool)
+  await ensureUsageRenewalSchema(pool)
+  await ensureBookingPaymentSlipsSchema(pool)
   await ensureServiceCategoriesSchema(pool)
 
   await pool.query(`
@@ -594,6 +659,7 @@ async function ensureFcmTokensSchema(pool) {
 module.exports = {
   ensureSchema,
   ensureShopUsageColumns,
+  ensureUsageRenewalSchema,
   ensureServiceCategoriesSchema,
   ensureChatNotifySchema,
   ensureFcmTokensSchema,

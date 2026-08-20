@@ -5,7 +5,7 @@ const {
   matchesDynamicSlotStart,
 } = require('../src/utils/dynamicBookingSlots')
 
-test('excludeBookingId allows moving into slot blocked only by the booking being edited', () => {
+test('admin edit validation matches customer slots (no excludeBookingId on occupied time)', () => {
   const bookings = [
     {
       id: 5,
@@ -19,7 +19,7 @@ test('excludeBookingId allows moving into slot blocked only by the booking being
   const dayWindows = [{ start_hour: 10, start_minute: 0, end_hour: 20, end_minute: 30 }]
   const targetStart = { startHour: 18, startMinute: 0, startM: 18 * 60 }
 
-  const withoutExclude = buildDynamicBookableSlots({
+  const available = buildDynamicBookableSlots({
     slotHours: 2,
     bookings,
     blocks: [],
@@ -27,16 +27,5 @@ test('excludeBookingId allows moving into slot blocked only by the booking being
     openHour: 10,
     lastBookingHour: 18,
   })
-  assert.equal(matchesDynamicSlotStart(targetStart, withoutExclude), false)
-
-  const withExclude = buildDynamicBookableSlots({
-    slotHours: 2,
-    bookings,
-    blocks: [],
-    dayWindows,
-    openHour: 10,
-    lastBookingHour: 18,
-    excludeBookingId: 5,
-  })
-  assert.equal(matchesDynamicSlotStart(targetStart, withExclude), true)
+  assert.equal(matchesDynamicSlotStart(targetStart, available), false)
 })

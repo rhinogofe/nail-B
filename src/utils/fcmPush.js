@@ -154,8 +154,8 @@ async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, ti
   const shop = await getShopPushContext(pool, shopId)
   if (!shop) return { ok: false, skipped: true, reason: 'shop_not_found' }
 
-  const { getSystemChatUserId } = require('./systemChatUser')
-  const systemUserId = await getSystemChatUserId(pool, shopId)
+  const { ensureSystemChatUser } = require('./systemChatUser')
+  const systemUserId = await ensureSystemChatUser(pool, shopId)
   const payload = buildChatPushPayload({
     shopSlug: shop.slug,
     title: `${title} · ${shop.name}`,
@@ -166,6 +166,9 @@ async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, ti
   })
   if (messageId) {
     payload.data.messageId = String(messageId)
+  }
+  if (relatedUserId) {
+    payload.data.relatedUserId = String(relatedUserId)
   }
   return sendPushToShopAdmins(pool, shopId, payload)
 }

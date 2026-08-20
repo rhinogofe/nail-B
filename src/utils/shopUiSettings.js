@@ -25,6 +25,7 @@ const UI_DEFAULTS = {
   ui_line_message_template:
     'ส่งสลิปมัดจำคิว\nBooking: {bookingId}\nวันที่: {date}\nเวลา: {start} – {end}\nยอด: {amount} บาท',
   ui_payment_page_title: 'ชำระเงินมัดจำ',
+  ui_payment_slip_upload_enabled: '0',
   ui_payment_notice_off: 'กรุณาชำระมัดจำและส่งสลิปให้แอดมินยืนยัน',
   ui_payment_notice_timer:
     'กรุณาชำระภายใน {hours} ชม. นับจากเวลาจอง มิฉะนั้นคิวจะถูกยกเลิกอัตโนมัติ',

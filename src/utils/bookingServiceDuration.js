@@ -76,9 +76,29 @@ async function validateBookingStartSlot(
   slotHours,
   excludeBookingId = null
 ) {
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
-  if (extendEnabled) {
-    const { validateDynamicBookingStart } = require('./dynamicBookingSlots')
+
+  if (dayWindows.length && !extendEnabled) {
+    if (!matchesDayWindowStart(baseSlot, dayWindows)) {
+      return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
+    }
+    return null
+  }
+
+  if (extendEnabled && dayWindows.length) {
+    const {
+      fetchBookingsForDynamicSlots,
+      shouldUseDynamicCustomDaySlots,
+      validateDynamicBookingStart,
+    } = require('./dynamicBookingSlots')
+    const bookings = await fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate)
+    if (!shouldUseDynamicCustomDaySlots({ dayWindows, extendByServices: true, bookings })) {
+      if (!matchesDayWindowStart(baseSlot, dayWindows)) {
+        return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
+      }
+      return null
+    }
     return validateDynamicBookingStart(
       poolOrClient,
       shopId,
@@ -89,12 +109,16 @@ async function validateBookingStartSlot(
     )
   }
 
-  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
-  if (dayWindows.length) {
-    if (!matchesDayWindowStart(baseSlot, dayWindows)) {
-      return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
-    }
-    return null
+  if (extendEnabled) {
+    const { validateDynamicBookingStart } = require('./dynamicBookingSlots')
+    return validateDynamicBookingStart(
+      poolOrClient,
+      shopId,
+      bookingDate,
+      baseSlot,
+      slotHours,
+      excludeBookingId
+    )
   }
 
   if (baseSlot.startMinute !== 0 || baseSlot.endMinute !== 0) {

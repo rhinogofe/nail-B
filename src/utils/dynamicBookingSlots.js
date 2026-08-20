@@ -80,6 +80,61 @@ function getTimelineBounds({ dayWindows, openHour, lastBookingHour, slotHours })
   }
 }
 
+function normalizeDayWindowRanges(dayWindows) {
+  return (dayWindows || [])
+    .filter(Boolean)
+    .map((w) => ({
+      startM: toMinutes(Number(w.start_hour), normalizeMinute(w.start_minute)),
+      endM: toMinutes(Number(w.end_hour), normalizeMinute(w.end_minute)),
+    }))
+    .filter((w) => w.endM > w.startM)
+    .sort((a, b) => a.startM - b.startM)
+}
+
+function shouldUseDynamicCustomDaySlots({ dayWindows, extendByServices, bookings }) {
+  const windows = normalizeDayWindowRanges(dayWindows)
+  if (!windows.length) return Boolean(extendByServices)
+  if (!extendByServices) return false
+  return (bookings || []).some((b) => b.status !== 'cancelled')
+}
+
+function packDynamicSlotsInRange({
+  rangeStartM,
+  rangeEndM,
+  occupied,
+  slotLenM,
+  minGapMinutes,
+}) {
+  const result = []
+  let cursor = rangeStartM
+
+  while (cursor < rangeEndM) {
+    const inside = occupied.find((o) => cursor >= o.startM && cursor < o.endM)
+    if (inside) {
+      cursor = inside.endM
+      continue
+    }
+
+    const nextStart = occupied
+      .filter((o) => o.startM > cursor)
+      .reduce((min, o) => Math.min(min, o.startM), rangeEndM)
+    const gapEnd = Math.min(nextStart, rangeEndM)
+    const space = gapEnd - cursor
+
+    if (space >= slotLenM) {
+      result.push(minuteToSlot(cursor, cursor + slotLenM, slotLenM))
+      cursor += slotLenM
+    } else if (space >= minGapMinutes) {
+      result.push(minuteToSlot(cursor, cursor + space, space))
+      cursor += space
+    } else {
+      cursor = gapEnd >= rangeEndM ? rangeEndM : nextStart
+    }
+  }
+
+  return result
+}
+
 function buildDynamicBookableSlots({
   slotHours = DEFAULT_SLOT_HOURS,
   bookings = [],
@@ -106,33 +161,26 @@ function buildDynamicBookableSlots({
 
   if (occupied.some((o) => o.fullDay)) return []
 
-  const result = []
-  let cursor = timelineStart
-
-  while (cursor < maxEndM) {
-    const inside = occupied.find((o) => cursor >= o.startM && cursor < o.endM)
-    if (inside) {
-      cursor = inside.endM
-      continue
-    }
-
-    const nextStart = occupied
-      .filter((o) => o.startM > cursor)
-      .reduce((min, o) => Math.min(min, o.startM), maxEndM)
-
-    const space = nextStart - cursor
-    if (space >= slotLenM) {
-      result.push(minuteToSlot(cursor, cursor + slotLenM, slotLenM))
-      cursor += slotLenM
-    } else if (space >= minGapMinutes) {
-      result.push(minuteToSlot(cursor, cursor + space, space))
-      cursor += space
-    } else {
-      cursor = nextStart
-    }
+  const windowRanges = normalizeDayWindowRanges(dayWindows)
+  if (windowRanges.length) {
+    return windowRanges.flatMap((window) =>
+      packDynamicSlotsInRange({
+        rangeStartM: window.startM,
+        rangeEndM: window.endM,
+        occupied,
+        slotLenM,
+        minGapMinutes,
+      })
+    )
   }
 
-  return result
+  return packDynamicSlotsInRange({
+    rangeStartM: timelineStart,
+    rangeEndM: maxEndM,
+    occupied,
+    slotLenM,
+    minGapMinutes,
+  })
 }
 
 function buildDynamicTimelineSlots(params) {
@@ -221,9 +269,11 @@ function hasOverlapWithBookings(slot, bookings, slotHours, excludeBookingId) {
 
 module.exports = {
   MIN_GAP_SLOT_MINUTES,
+  shouldUseDynamicCustomDaySlots,
   buildDynamicBookableSlots,
   buildDynamicTimelineSlots,
   matchesDynamicSlotStart,
   validateDynamicBookingStart,
+  fetchBookingsForDynamicSlots,
   hasOverlapWithBookings,
 }

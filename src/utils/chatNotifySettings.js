@@ -9,6 +9,7 @@ const SETTING_KEYS = [
   'chat_notify_cancel_customer_enabled',
   'chat_notify_paid_admin_enabled',
   'chat_notify_paid_customer_enabled',
+  'chat_notify_slip_admin_enabled',
   'chat_notify_new_booking_template',
   'chat_notify_upcoming_admin_template',
   'chat_notify_upcoming_customer_template',
@@ -16,6 +17,7 @@ const SETTING_KEYS = [
   'chat_notify_cancel_customer_template',
   'chat_notify_paid_admin_template',
   'chat_notify_paid_customer_template',
+  'chat_notify_slip_admin_template',
 ]
 
 const DEFAULT_NEW_BOOKING_TEMPLATE = `🔔 มีคิวจองใหม่ ({shop})
@@ -59,6 +61,12 @@ const DEFAULT_PAID_CUSTOMER_TEMPLATE = `✅ ชำระเงินแล้ว
 💅 {services}
 📍 {shop}`
 
+const DEFAULT_SLIP_ADMIN_TEMPLATE = `💳 มีสลิปรอตรวจ ({shop})
+👤 {customer}
+📅 {date} · {start}–{end}
+💅 {services}
+🆔 {bookingId}`
+
 function parseEnabled(value, defaultTrue = true) {
   if (value == null || value === '') return defaultTrue
   return value !== 'false'
@@ -82,6 +90,7 @@ async function getChatNotifySettings(poolOrClient, shopId) {
     cancelCustomerEnabled: parseEnabled(map.chat_notify_cancel_customer_enabled),
     paidAdminEnabled: parseEnabled(map.chat_notify_paid_admin_enabled, false),
     paidCustomerEnabled: parseEnabled(map.chat_notify_paid_customer_enabled),
+    slipAdminEnabled: parseEnabled(map.chat_notify_slip_admin_enabled),
     newBookingTemplate: map.chat_notify_new_booking_template || DEFAULT_NEW_BOOKING_TEMPLATE,
     upcomingAdminTemplate: map.chat_notify_upcoming_admin_template || DEFAULT_UPCOMING_ADMIN_TEMPLATE,
     upcomingCustomerTemplate: map.chat_notify_upcoming_customer_template || DEFAULT_UPCOMING_CUSTOMER_TEMPLATE,
@@ -89,6 +98,7 @@ async function getChatNotifySettings(poolOrClient, shopId) {
     cancelCustomerTemplate: map.chat_notify_cancel_customer_template || DEFAULT_CANCEL_CUSTOMER_TEMPLATE,
     paidAdminTemplate: map.chat_notify_paid_admin_template || DEFAULT_PAID_ADMIN_TEMPLATE,
     paidCustomerTemplate: map.chat_notify_paid_customer_template || DEFAULT_PAID_CUSTOMER_TEMPLATE,
+    slipAdminTemplate: map.chat_notify_slip_admin_template || DEFAULT_SLIP_ADMIN_TEMPLATE,
   }
 }
 
@@ -118,6 +128,9 @@ async function setChatNotifySettings(poolOrClient, shopId, partial) {
   if (typeof partial.paidCustomerEnabled === 'boolean') {
     entries.chat_notify_paid_customer_enabled = partial.paidCustomerEnabled ? 'true' : 'false'
   }
+  if (typeof partial.slipAdminEnabled === 'boolean') {
+    entries.chat_notify_slip_admin_enabled = partial.slipAdminEnabled ? 'true' : 'false'
+  }
   if (partial.newBookingTemplate != null) {
     entries.chat_notify_new_booking_template = String(partial.newBookingTemplate)
   }
@@ -139,6 +152,9 @@ async function setChatNotifySettings(poolOrClient, shopId, partial) {
   if (partial.paidCustomerTemplate != null) {
     entries.chat_notify_paid_customer_template = String(partial.paidCustomerTemplate)
   }
+  if (partial.slipAdminTemplate != null) {
+    entries.chat_notify_slip_admin_template = String(partial.slipAdminTemplate)
+  }
   if (Object.keys(entries).length) {
     await setShopSettings(poolOrClient, shopId, entries)
   }
@@ -154,6 +170,7 @@ module.exports = {
   DEFAULT_CANCEL_CUSTOMER_TEMPLATE,
   DEFAULT_PAID_ADMIN_TEMPLATE,
   DEFAULT_PAID_CUSTOMER_TEMPLATE,
+  DEFAULT_SLIP_ADMIN_TEMPLATE,
   getChatNotifySettings,
   setChatNotifySettings,
 }

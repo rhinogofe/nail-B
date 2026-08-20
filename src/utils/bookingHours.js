@@ -79,20 +79,43 @@ async function validateBookingSlot(
   slotHours = DEFAULT_SLOT_HOURS,
   excludeBookingId = null
 ) {
-  const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
+  const slot = normalizeSlotInput(body, slotHours)
+  if (!slot) return 'ช่วงเวลาไม่ถูกต้อง'
 
-  if (!extendEnabled) {
-    const slot = normalizeSlotInput(body, slotHours)
-    if (!slot) return 'ช่วงเวลาไม่ถูกต้อง'
-
-    const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
-    if (dayWindows.length) {
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  if (dayWindows.length) {
+    const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
+    if (!extendEnabled) {
       if (!matchesDayWindowSlot(slot, dayWindows)) {
         return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
       }
       return null
     }
 
+    const {
+      fetchBookingsForDynamicSlots,
+      shouldUseDynamicCustomDaySlots,
+    } = require('./dynamicBookingSlots')
+    const bookings = await fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate)
+    if (!shouldUseDynamicCustomDaySlots({ dayWindows, extendByServices: true, bookings })) {
+      const baseSlot = normalizeSlotInput(
+        {
+          start_hour: body.start_hour,
+          start_minute: body.start_minute,
+        },
+        slotHours
+      )
+      if (!baseSlot) return 'ช่วงเวลาไม่ถูกต้อง'
+      if (!matchesDayWindowStart(baseSlot, dayWindows)) {
+        return 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้'
+      }
+      return null
+    }
+  }
+
+  const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
+
+  if (!extendEnabled) {
     if (slot.startMinute !== 0 || slot.endMinute !== 0) {
       return 'วันนี้ใช้เวลาเปิด-ปิดปกติ (เต็มชั่วโมง)'
     }

@@ -295,10 +295,46 @@ async function notifyBookingPaidChat(poolOrClient, shopId, bookingId) {
   }
 }
 
+async function notifyAdminPaymentSlipChat(poolOrClient, shopId, bookingId) {
+  try {
+    const settings = await getChatNotifySettings(poolOrClient, shopId)
+    if (!settings.slipAdminEnabled) {
+      return { ok: false, skipped: true, reason: 'disabled' }
+    }
+
+    const ctx = await loadBookingNotifyContext(poolOrClient, shopId, bookingId)
+    if (!ctx) return { ok: false, skipped: true, reason: 'booking_not_found' }
+
+    const customerUserId = await getBookingCustomerUserId(poolOrClient, shopId, bookingId)
+    if (!customerUserId) return { ok: false, skipped: true, reason: 'no_customer' }
+
+    const text = applyTemplate(settings.slipAdminTemplate, ctx)
+    const row = await insertSystemChatMessage(poolOrClient, {
+      shopId,
+      relatedUserId: customerUserId,
+      body: text,
+    })
+    if (!row) return { ok: false, skipped: true, reason: 'empty_message' }
+
+    pushAfterSystemChatNotify(poolOrClient, shopId, {
+      title: 'มีสลิปรอตรวจ',
+      body: text,
+      relatedUserId: customerUserId,
+      messageId: row.id,
+      bookingId,
+    }).catch(() => null)
+    return { ok: true, messageId: row.id }
+  } catch (err) {
+    console.error('notifyAdminPaymentSlipChat:', err.message)
+    return { ok: false, error: err.message }
+  }
+}
+
 module.exports = {
   notifyAdminNewBookingChat,
   notifyAdminUpcomingChat,
   notifyCustomerUpcomingChat,
   notifyBookingCancelledChat,
   notifyBookingPaidChat,
+  notifyAdminPaymentSlipChat,
 }
