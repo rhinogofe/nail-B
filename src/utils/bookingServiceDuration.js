@@ -66,11 +66,25 @@ async function validateBookingEndWithinDay(poolOrClient, shopId, bookingDate, sl
   return null
 }
 
-async function validateBookingStartSlot(poolOrClient, shopId, bookingDate, baseSlot, slotHours) {
+async function validateBookingStartSlot(
+  poolOrClient,
+  shopId,
+  bookingDate,
+  baseSlot,
+  slotHours,
+  excludeBookingId = null
+) {
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
   if (extendEnabled) {
     const { validateDynamicBookingStart } = require('./dynamicBookingSlots')
-    return validateDynamicBookingStart(poolOrClient, shopId, bookingDate, baseSlot, slotHours)
+    return validateDynamicBookingStart(
+      poolOrClient,
+      shopId,
+      bookingDate,
+      baseSlot,
+      slotHours,
+      excludeBookingId
+    )
   }
 
   const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
@@ -97,7 +111,14 @@ async function validateBookingStartSlot(poolOrClient, shopId, bookingDate, baseS
   return `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour} หรือในช่วงเปิดเพิ่มของวันนี้`
 }
 
-async function finalizeBookingSlotWithServices(poolOrClient, shopId, bookingDate, body, optionIds) {
+async function finalizeBookingSlotWithServices(
+  poolOrClient,
+  shopId,
+  bookingDate,
+  body,
+  optionIds,
+  excludeBookingId = null
+) {
   const { getBookingSlotHours } = require('./bookingSlotHours')
   const slotHours = await getBookingSlotHours(poolOrClient, shopId)
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
@@ -112,7 +133,8 @@ async function finalizeBookingSlotWithServices(poolOrClient, shopId, bookingDate
     shopId,
     bookingDate,
     baseSlot,
-    slotHours
+    slotHours,
+    excludeBookingId
   )
   if (startError) return { error: startError }
 

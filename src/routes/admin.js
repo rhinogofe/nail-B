@@ -1902,7 +1902,7 @@ router.post('/settings/ui/upload', async (req, res) => {
   try {
     const kind = String(req.body?.kind || '').toLowerCase()
     if (!isAllowedKind(kind)) {
-      return res.status(400).json({ error: 'ประเภทรูปต้องเป็น logo หรือ hero' })
+      return res.status(400).json({ error: 'ประเภทรูปต้องเป็น logo, hero หรือ kshop_qr' })
     }
 
     const parsed = parseBase64Image(req.body?.image_data, req.body?.image_mime)
@@ -1911,13 +1911,22 @@ router.post('/settings/ui/upload', async (req, res) => {
 
     const pool = getPool()
     const shopId = req.shop.id
-    const settingKey = kind === 'logo' ? 'ui_logo_url' : 'ui_hero_image_url'
+    const settingKey = kind === 'logo'
+      ? 'ui_logo_url'
+      : kind === 'hero'
+        ? 'ui_hero_image_url'
+        : 'ui_kshop_qr_url'
     const current = await getUiSettings(pool, shopId)
 
     const saved = await saveUiImage(shopId, kind, parsed.buffer, parsed.ext)
     await deleteStoredUiImage(shopId, current[settingKey])
 
-    const settings = await setUiSettings(pool, shopId, { [settingKey]: saved.url })
+    const patch = { [settingKey]: saved.url }
+    if (kind === 'kshop_qr') {
+      patch.ui_promptpay_id = ''
+    }
+
+    const settings = await setUiSettings(pool, shopId, patch)
     res.json({ success: true, kind, url: saved.url, settings })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -2187,7 +2196,14 @@ router.patch('/bookings/:id', async (req, res) => {
           slotBody.end_hour = row.end_hour
           slotBody.end_minute = row.end_minute ?? 0
         }
-        const slotError = await validateBookingSlot(client, shopId, effectiveDate, slotBody, slotHours)
+        const slotError = await validateBookingSlot(
+          client,
+          shopId,
+          effectiveDate,
+          slotBody,
+          slotHours,
+          req.params.id
+        )
         if (slotError) {
           throw { status: 400, message: slotError }
         }
@@ -2197,7 +2213,8 @@ router.patch('/bookings/:id', async (req, res) => {
           shopId,
           effectiveDate,
           slotBody,
-          effectiveOptionIds
+          effectiveOptionIds,
+          req.params.id
         )
         if (finalized.error) {
           throw { status: 400, message: finalized.error }
@@ -2356,10 +2373,10 @@ router.get('/users', async (req, res) => {
 
     const baseCte = `
       WITH user_stats AS (
-        SELECT
+      SELECT
           u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note,
           u.is_admin, u.total_points, u.created_at,
-          COUNT(b.id)::int AS total_bookings,
+        COUNT(b.id)::int AS total_bookings,
           SUM(CASE WHEN b.status = 'done' THEN 1 ELSE 0 END)::int AS completed_bookings,
           SUM(CASE WHEN b.status = 'cancelled' THEN 1 ELSE 0 END)::int AS cancelled_bookings,
           (
@@ -2376,7 +2393,7 @@ router.get('/users', async (req, res) => {
             ORDER BY CASE WHEN s.slug = 'default' THEN 0 ELSE 1 END, s.slug
             LIMIT 1
           ) AS admin_shop_slug
-        FROM users u
+      FROM users u
         LEFT JOIN bookings b ON b.user_id = u.id AND b.shop_id = $1
         ${whereClause}
         GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.admin_note, u.is_admin, u.total_points, u.created_at

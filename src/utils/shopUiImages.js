@@ -7,7 +7,7 @@ function uploadRoot() {
   return getUiUploadRoot()
 }
 const MAX_BYTES = 3 * 1024 * 1024
-const ALLOWED_KINDS = new Set(['logo', 'hero'])
+const ALLOWED_KINDS = new Set(['logo', 'hero', 'kshop_qr'])
 const MIME_EXT = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -55,7 +55,7 @@ function buildUiImagePath(kind, filename) {
 
 function parseStoredUiImagePath(url) {
   const u = String(url || '').trim()
-  const match = u.match(/\/api\/bookings\/ui-images\/(logo|hero)\/([^/?#]+)$/i)
+  const match = u.match(/\/api\/bookings\/ui-images\/(logo|hero|kshop_qr)\/([^/?#]+)$/i)
   if (!match) return null
   return { kind: match[1].toLowerCase(), filename: match[2] }
 }

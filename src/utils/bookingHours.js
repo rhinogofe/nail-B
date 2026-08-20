@@ -71,7 +71,14 @@ async function validateBookingStartHour(poolOrClient, shopId, bookingDate, start
   return `start_hour ต้องอยู่ระหว่าง ${openHour}-${lastBookingHour} หรือในช่วงเปิดเพิ่มของวันนี้`
 }
 
-async function validateBookingSlot(poolOrClient, shopId, bookingDate, body, slotHours = DEFAULT_SLOT_HOURS) {
+async function validateBookingSlot(
+  poolOrClient,
+  shopId,
+  bookingDate,
+  body,
+  slotHours = DEFAULT_SLOT_HOURS,
+  excludeBookingId = null
+) {
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
 
   if (!extendEnabled) {
@@ -116,7 +123,14 @@ async function validateBookingSlot(poolOrClient, shopId, bookingDate, body, slot
   if (!baseSlot) return 'ช่วงเวลาไม่ถูกต้อง'
 
   const { validateDynamicBookingStart } = require('./dynamicBookingSlots')
-  return validateDynamicBookingStart(poolOrClient, shopId, bookingDate, baseSlot, slotHours)
+  return validateDynamicBookingStart(
+    poolOrClient,
+    shopId,
+    bookingDate,
+    baseSlot,
+    slotHours,
+    excludeBookingId
+  )
 }
 
 module.exports = {

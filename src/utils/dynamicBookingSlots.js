@@ -179,7 +179,14 @@ async function fetchBlocksForDynamicSlots(poolOrClient, shopId, bookingDate) {
   return result.rows
 }
 
-async function validateDynamicBookingStart(poolOrClient, shopId, bookingDate, baseSlot, slotHours) {
+async function validateDynamicBookingStart(
+  poolOrClient,
+  shopId,
+  bookingDate,
+  baseSlot,
+  slotHours,
+  excludeBookingId = null
+) {
   const [bookings, blocks, dayWindows, shopHours] = await Promise.all([
     fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate),
     fetchBlocksForDynamicSlots(poolOrClient, shopId, bookingDate),
@@ -194,6 +201,7 @@ async function validateDynamicBookingStart(poolOrClient, shopId, bookingDate, ba
     dayWindows,
     openHour: shopHours.openHour,
     lastBookingHour: shopHours.lastBookingHour,
+    excludeBookingId,
   })
 
   if (!matchesDynamicSlotStart(baseSlot, available)) {

@@ -13,6 +13,7 @@ const UI_DEFAULTS = {
   ui_bank_account_name: 'Nail Studio',
   ui_bank_account_no: '',
   ui_promptpay_id: '',
+  ui_kshop_qr_url: '',
   ui_thai_qr_label: 'สแกน Thai QR เพื่อชำระมัดจำ',
   ui_line_button_label: 'ส่งสลิปทาง LINE',
   ui_line_message_template:
