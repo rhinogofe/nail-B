@@ -45,8 +45,6 @@ function buildNotificationPayload({ title, body, url, data = {} }) {
     body: safeBody,
     url: absoluteUrl,
   }
-  const origin = getFrontendOrigin()
-  const iconUrl = origin ? `${origin}/favicon.svg` : '/favicon.svg'
   return {
     data: Object.fromEntries(
       Object.entries(payloadData).map(([key, value]) => [key, String(value ?? '')])
@@ -55,11 +53,6 @@ function buildNotificationPayload({ title, body, url, data = {} }) {
       headers: {
         Urgency: 'high',
         TTL: '86400',
-      },
-      notification: {
-        title: safeTitle,
-        body: safeBody,
-        icon: iconUrl,
       },
       fcmOptions: {
         link: absoluteUrl,
