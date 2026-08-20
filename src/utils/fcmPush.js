@@ -45,7 +45,8 @@ function buildNotificationPayload({ title, body, url, data = {} }) {
     body: safeBody,
     url: absoluteUrl,
   }
-  const messageId = payloadData.messageId || payloadData.message_id || ''
+  const origin = getFrontendOrigin()
+  const iconUrl = origin ? `${origin}/favicon.svg` : '/favicon.svg'
   return {
     data: Object.fromEntries(
       Object.entries(payloadData).map(([key, value]) => [key, String(value ?? '')])
@@ -54,6 +55,11 @@ function buildNotificationPayload({ title, body, url, data = {} }) {
       headers: {
         Urgency: 'high',
         TTL: '86400',
+      },
+      notification: {
+        title: safeTitle,
+        body: safeBody,
+        icon: iconUrl,
       },
       fcmOptions: {
         link: absoluteUrl,
@@ -233,7 +239,11 @@ async function pushAfterAdminChatMessage(pool, shopId, customerId, { body, image
   if (messageId) {
     payload.data.messageId = String(messageId)
   }
-  return sendPushToUser(pool, customerId, payload)
+  const result = await sendPushToUser(pool, customerId, payload)
+  if (process.env.NODE_ENV !== 'production' && result?.skipped && result.reason === 'no_tokens') {
+    console.log('pushAfterAdminChatMessage: no FCM tokens for customer', customerId)
+  }
+  return result
 }
 
 module.exports = {
