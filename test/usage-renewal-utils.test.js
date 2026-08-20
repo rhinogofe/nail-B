@@ -76,3 +76,9 @@ test('enrichShopUsage adds computed fields', () => {
   assert.equal(enriched.usage_limit_days, 30)
   assert.ok(enriched.usage_expires_at)
 })
+
+test('renewal default qr instruction constant', () => {
+  const { DEFAULT_QR_INSTRUCTION } = require('../src/utils/usageRenewal')
+  assert.match(DEFAULT_QR_INSTRUCTION, /QR/)
+  assert.match(DEFAULT_QR_INSTRUCTION, /สลิป/)
+})

@@ -15,11 +15,15 @@ const SETTING_KEYS = {
   priceNoLine: 'renewal_price_per_month_no_line',
   priceWithLine: 'renewal_price_per_month_with_line',
   bannerDaysBefore: 'renewal_banner_days_before',
+  qrInstruction: 'renewal_qr_instruction',
+  promptpayAccountName: 'renewal_promptpay_account_name',
 }
 
 const DEFAULT_PRICE_NO_LINE = 149
 const DEFAULT_PRICE_WITH_LINE = 249
 const DEFAULT_BANNER_DAYS_BEFORE = 7
+const DEFAULT_QR_INSTRUCTION = 'สแกน QR PromptPay แล้วอัปโหลดสลิปด้านล่าง'
+const DEFAULT_PROMPTPAY_ACCOUNT_NAME = ''
 
 const DEFAULT_DESCRIPTION =
   'เลือกแพ็ก (มี/ไม่มีแจ้งเตือน LINE) และจำนวนเดือน สแกน QR ชำระเงิน แล้วอัปโหลดสลิป — รอแอดมินหลักยืนยัน'
@@ -205,6 +209,8 @@ async function getRenewalSettings(poolOrClient) {
       price_per_month_no_line: DEFAULT_PRICE_NO_LINE,
       price_per_month_with_line: DEFAULT_PRICE_WITH_LINE,
       banner_days_before: DEFAULT_BANNER_DAYS_BEFORE,
+      qr_instruction: DEFAULT_QR_INSTRUCTION,
+      promptpay_account_name: DEFAULT_PROMPTPAY_ACCOUNT_NAME,
     }
   }
 
@@ -216,6 +222,8 @@ async function getRenewalSettings(poolOrClient) {
     [SETTING_KEYS.priceNoLine]: String(DEFAULT_PRICE_NO_LINE),
     [SETTING_KEYS.priceWithLine]: String(DEFAULT_PRICE_WITH_LINE),
     [SETTING_KEYS.bannerDaysBefore]: String(DEFAULT_BANNER_DAYS_BEFORE),
+    [SETTING_KEYS.qrInstruction]: DEFAULT_QR_INSTRUCTION,
+    [SETTING_KEYS.promptpayAccountName]: DEFAULT_PROMPTPAY_ACCOUNT_NAME,
   })
 
   const map = await getShopSettings(poolOrClient, defaultShopId, Object.values(SETTING_KEYS))
@@ -232,6 +240,9 @@ async function getRenewalSettings(poolOrClient) {
     price_per_month_no_line: parseMonthlyPrice(map[SETTING_KEYS.priceNoLine], DEFAULT_PRICE_NO_LINE),
     price_per_month_with_line: parseMonthlyPrice(map[SETTING_KEYS.priceWithLine], DEFAULT_PRICE_WITH_LINE),
     banner_days_before: parseBannerDaysBefore(map[SETTING_KEYS.bannerDaysBefore], DEFAULT_BANNER_DAYS_BEFORE),
+    qr_instruction:
+      String(map[SETTING_KEYS.qrInstruction] || DEFAULT_QR_INSTRUCTION).trim() || DEFAULT_QR_INSTRUCTION,
+    promptpay_account_name: String(map[SETTING_KEYS.promptpayAccountName] || '').trim(),
   }
 }
 
@@ -266,6 +277,13 @@ async function setRenewalSettings(poolOrClient, partial) {
     entries[SETTING_KEYS.bannerDaysBefore] = String(
       parseBannerDaysBefore(partial.banner_days_before, DEFAULT_BANNER_DAYS_BEFORE)
     )
+  }
+  if (Object.prototype.hasOwnProperty.call(partial, 'qr_instruction')) {
+    const text = String(partial.qr_instruction || '').trim()
+    entries[SETTING_KEYS.qrInstruction] = text || DEFAULT_QR_INSTRUCTION
+  }
+  if (Object.prototype.hasOwnProperty.call(partial, 'promptpay_account_name')) {
+    entries[SETTING_KEYS.promptpayAccountName] = String(partial.promptpay_account_name || '').trim()
   }
 
   if (Object.keys(entries).length) {
@@ -328,6 +346,7 @@ module.exports = {
   DEFAULT_PRICE_NO_LINE,
   DEFAULT_PRICE_WITH_LINE,
   DEFAULT_BANNER_DAYS_BEFORE,
+  DEFAULT_QR_INSTRUCTION,
   emptyPrices,
   parsePrices,
   parseBannerDaysBefore,

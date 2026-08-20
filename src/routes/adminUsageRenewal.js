@@ -106,6 +106,12 @@ router.patch('/settings', async (req, res) => {
     if (Object.prototype.hasOwnProperty.call(body, 'banner_days_before')) {
       partial.banner_days_before = body.banner_days_before
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'qr_instruction')) {
+      partial.qr_instruction = body.qr_instruction
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'promptpay_account_name')) {
+      partial.promptpay_account_name = body.promptpay_account_name
+    }
     const settings = await setRenewalSettings(pool, partial)
     res.json({ success: true, settings })
   } catch (err) {
