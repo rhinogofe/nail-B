@@ -50,6 +50,7 @@ app.get('/health', (req, res) => {
     upload_persistent: marker.persistent,
     upload_first_seen_at: marker.firstSeenAt,
     upload_boot_count: marker.bootCount,
+    map_embed_resolver: 'v2',
   })
 })
 

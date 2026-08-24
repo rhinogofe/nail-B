@@ -93,6 +93,19 @@ router.get('/ui-settings', async (req, res) => {
   }
 })
 
+router.get('/map-embed', async (req, res) => {
+  try {
+    const pool = getPool()
+    const settings = await getUiSettings(pool, req.shop.id)
+    res.json({
+      map_url: settings.ui_shop_map_url || '',
+      embed_url: settings.ui_shop_map_embed_url || '',
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/ui-images/:kind/:filename', async (req, res) => {
   try {
     const kind = String(req.params.kind || '').toLowerCase()

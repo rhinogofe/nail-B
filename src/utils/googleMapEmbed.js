@@ -158,39 +158,81 @@ function resolveShopMapEmbedUrlSync(mapUrl, embedUrl, options = {}) {
   return buildEmbedFromLocation(location, apiKey)
 }
 
+function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
+}
+
+const RESOLVE_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7',
+}
+
 async function resolveGoogleMapsShareUrl(url) {
   const raw = String(url ?? '').trim()
   if (!raw || !isShortGoogleMapsUrl(raw)) return raw
 
+  let current = raw
+  for (let hop = 0; hop < 8; hop += 1) {
+    try {
+      const res = await fetchWithTimeout(current, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: RESOLVE_HEADERS,
+      })
+
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location')
+        if (!location) break
+        current = new URL(location, current).href
+        if (!isShortGoogleMapsUrl(current)) return current
+        continue
+      }
+
+      if (res.url && !isShortGoogleMapsUrl(res.url)) return res.url
+      if (!isShortGoogleMapsUrl(current)) return current
+      break
+    } catch (err) {
+      console.warn('[googleMapEmbed] manual redirect failed:', err.message)
+      break
+    }
+  }
+
   try {
-    const res = await fetch(raw, {
+    const res = await fetchWithTimeout(raw, {
       method: 'GET',
       redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; NailBooking/1.0)',
-      },
+      headers: RESOLVE_HEADERS,
     })
-    return res.url || raw
-  } catch {
-    return raw
+    if (res.url && !isShortGoogleMapsUrl(res.url)) return res.url
+  } catch (err) {
+    console.warn('[googleMapEmbed] follow redirect failed:', err.message)
   }
+
+  return current
 }
 
 async function resolveShopMapEmbedUrl(mapUrl, embedUrl, options = {}) {
+  let map = String(mapUrl ?? '').trim()
+
+  if (hasHttpUrl(map)) {
+    if (isShortGoogleMapsUrl(map)) {
+      map = await resolveGoogleMapsShareUrl(map)
+    }
+    const fromMap = resolveShopMapEmbedUrlSync(map, '', options)
+    if (fromMap) return fromMap
+  }
+
   const embed = String(embedUrl ?? '').trim()
   if (isGoogleMapsEmbedUrl(embed)) return embed
 
   const embedPb = extractPbParam(embed)
   if (embedPb) return buildEmbedFromPb(embedPb)
 
-  let map = String(mapUrl ?? '').trim()
-  if (!hasHttpUrl(map)) return ''
-
-  if (isShortGoogleMapsUrl(map)) {
-    map = await resolveGoogleMapsShareUrl(map)
-  }
-
-  return resolveShopMapEmbedUrlSync(map, embed, options)
+  return ''
 }
 
 module.exports = {
