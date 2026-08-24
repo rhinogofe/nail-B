@@ -158,6 +158,30 @@ function resolveShopMapEmbedUrlSync(mapUrl, embedUrl, options = {}) {
   return buildEmbedFromLocation(location, apiKey)
 }
 
+function createMapEmbedDebug() {
+  return { steps: [], startedAt: new Date().toISOString() }
+}
+
+function pushMapEmbedDebug(debug, step, data = {}) {
+  if (!debug) return
+  debug.steps.push({ step, ...data })
+}
+
+function logMapEmbed(step, data = {}) {
+  try {
+    console.log('[map-embed]', step, JSON.stringify(data))
+  } catch {
+    console.log('[map-embed]', step)
+  }
+}
+
+function summarizeMapUrl(url) {
+  const raw = String(url ?? '').trim()
+  if (!raw) return ''
+  if (raw.length <= 120) return raw
+  return `${raw.slice(0, 117)}...`
+}
+
 function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -171,9 +195,15 @@ const RESOLVE_HEADERS = {
   'Accept-Language': 'th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
-async function resolveGoogleMapsShareUrl(url) {
+async function resolveGoogleMapsShareUrl(url, debug = null) {
   const raw = String(url ?? '').trim()
-  if (!raw || !isShortGoogleMapsUrl(raw)) return raw
+  if (!raw || !isShortGoogleMapsUrl(raw)) {
+    pushMapEmbedDebug(debug, 'skip_expand', { reason: 'not_short_url', url: summarizeMapUrl(raw) })
+    return raw
+  }
+
+  logMapEmbed('expand_start', { url: summarizeMapUrl(raw) })
+  pushMapEmbedDebug(debug, 'expand_start', { url: raw })
 
   let current = raw
   for (let hop = 0; hop < 8; hop += 1) {
@@ -184,19 +214,42 @@ async function resolveGoogleMapsShareUrl(url) {
         headers: RESOLVE_HEADERS,
       })
 
+      pushMapEmbedDebug(debug, 'expand_hop', {
+        hop,
+        status: res.status,
+        current: summarizeMapUrl(current),
+      })
+
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location')
-        if (!location) break
+        if (!location) {
+          pushMapEmbedDebug(debug, 'expand_stop', { reason: 'redirect_without_location', hop })
+          break
+        }
         current = new URL(location, current).href
-        if (!isShortGoogleMapsUrl(current)) return current
+        if (!isShortGoogleMapsUrl(current)) {
+          logMapEmbed('expand_ok_manual', { expanded: summarizeMapUrl(current), hops: hop + 1 })
+          pushMapEmbedDebug(debug, 'expand_ok', { method: 'manual', expanded: current, hops: hop + 1 })
+          return current
+        }
         continue
       }
 
-      if (res.url && !isShortGoogleMapsUrl(res.url)) return res.url
-      if (!isShortGoogleMapsUrl(current)) return current
+      if (res.url && !isShortGoogleMapsUrl(res.url)) {
+        logMapEmbed('expand_ok_res_url', { expanded: summarizeMapUrl(res.url), hops: hop + 1 })
+        pushMapEmbedDebug(debug, 'expand_ok', { method: 'res.url', expanded: res.url, hops: hop + 1 })
+        return res.url
+      }
+      if (!isShortGoogleMapsUrl(current)) {
+        logMapEmbed('expand_ok_current', { expanded: summarizeMapUrl(current), hops: hop + 1 })
+        pushMapEmbedDebug(debug, 'expand_ok', { method: 'current', expanded: current, hops: hop + 1 })
+        return current
+      }
+      pushMapEmbedDebug(debug, 'expand_stop', { reason: 'still_short_after_hop', hop, status: res.status })
       break
     } catch (err) {
-      console.warn('[googleMapEmbed] manual redirect failed:', err.message)
+      logMapEmbed('expand_manual_error', { hop, error: err.message })
+      pushMapEmbedDebug(debug, 'expand_error', { method: 'manual', hop, error: err.message })
       break
     }
   }
@@ -207,32 +260,94 @@ async function resolveGoogleMapsShareUrl(url) {
       redirect: 'follow',
       headers: RESOLVE_HEADERS,
     })
-    if (res.url && !isShortGoogleMapsUrl(res.url)) return res.url
+    if (res.url && !isShortGoogleMapsUrl(res.url)) {
+      logMapEmbed('expand_ok_follow', { expanded: summarizeMapUrl(res.url) })
+      pushMapEmbedDebug(debug, 'expand_ok', { method: 'follow', expanded: res.url })
+      return res.url
+    }
+    pushMapEmbedDebug(debug, 'expand_follow_no_change', {
+      res_url: summarizeMapUrl(res.url || ''),
+      status: res.status,
+    })
   } catch (err) {
-    console.warn('[googleMapEmbed] follow redirect failed:', err.message)
+    logMapEmbed('expand_follow_error', { error: err.message })
+    pushMapEmbedDebug(debug, 'expand_error', { method: 'follow', error: err.message })
   }
 
+  logMapEmbed('expand_failed', { final: summarizeMapUrl(current) })
+  pushMapEmbedDebug(debug, 'expand_failed', { final: current })
   return current
 }
 
-async function resolveShopMapEmbedUrl(mapUrl, embedUrl, options = {}) {
-  let map = String(mapUrl ?? '').trim()
+async function resolveShopMapEmbedUrlDetailed(mapUrl, embedUrl, options = {}) {
+  const debug = options.debug || createMapEmbedDebug()
+  const inputMap = String(mapUrl ?? '').trim()
+  const inputEmbed = String(embedUrl ?? '').trim()
+
+  pushMapEmbedDebug(debug, 'input', {
+    map_url: summarizeMapUrl(inputMap),
+    embed_url: summarizeMapUrl(inputEmbed),
+    short_link: isShortGoogleMapsUrl(inputMap),
+  })
+  logMapEmbed('resolve_start', {
+    map_url: summarizeMapUrl(inputMap),
+    short_link: isShortGoogleMapsUrl(inputMap),
+  })
+
+  let map = inputMap
 
   if (hasHttpUrl(map)) {
     if (isShortGoogleMapsUrl(map)) {
-      map = await resolveGoogleMapsShareUrl(map)
+      map = await resolveGoogleMapsShareUrl(map, debug)
     }
+
+    const location = parseGoogleMapsLocation(map)
+    pushMapEmbedDebug(debug, 'parsed_location', {
+      expanded: summarizeMapUrl(map),
+      location,
+    })
+
     const fromMap = resolveShopMapEmbedUrlSync(map, '', options)
-    if (fromMap) return fromMap
+    if (fromMap) {
+      logMapEmbed('resolve_ok_from_map', { embed: summarizeMapUrl(fromMap) })
+      pushMapEmbedDebug(debug, 'resolve_ok', { source: 'map_url', embed_url: fromMap })
+      return { embed: fromMap, debug }
+    }
+
+    pushMapEmbedDebug(debug, 'resolve_map_failed', {
+      expanded: summarizeMapUrl(map),
+      still_short: isShortGoogleMapsUrl(map),
+    })
+  } else {
+    pushMapEmbedDebug(debug, 'no_map_url', {})
   }
 
-  const embed = String(embedUrl ?? '').trim()
-  if (isGoogleMapsEmbedUrl(embed)) return embed
+  if (isGoogleMapsEmbedUrl(inputEmbed)) {
+    pushMapEmbedDebug(debug, 'resolve_ok', { source: 'stored_embed', embed_url: inputEmbed })
+    return { embed: inputEmbed, debug }
+  }
 
-  const embedPb = extractPbParam(embed)
-  if (embedPb) return buildEmbedFromPb(embedPb)
+  const embedPb = extractPbParam(inputEmbed)
+  if (embedPb) {
+    const fromPb = buildEmbedFromPb(embedPb)
+    pushMapEmbedDebug(debug, 'resolve_ok', { source: 'stored_embed_pb', embed_url: fromPb })
+    return { embed: fromPb, debug }
+  }
 
-  return ''
+  logMapEmbed('resolve_failed', {
+    map_url: summarizeMapUrl(inputMap),
+    expanded: summarizeMapUrl(map),
+  })
+  pushMapEmbedDebug(debug, 'resolve_failed', {
+    map_url: inputMap,
+    expanded: map,
+  })
+  return { embed: '', debug }
+}
+
+async function resolveShopMapEmbedUrl(mapUrl, embedUrl, options = {}) {
+  const { embed } = await resolveShopMapEmbedUrlDetailed(mapUrl, embedUrl, options)
+  return embed
 }
 
 module.exports = {
@@ -242,7 +357,9 @@ module.exports = {
   extractPbParam,
   parseGoogleMapsLocation,
   buildEmbedFromLocation,
+  createMapEmbedDebug,
   resolveGoogleMapsShareUrl,
   resolveShopMapEmbedUrlSync,
   resolveShopMapEmbedUrl,
+  resolveShopMapEmbedUrlDetailed,
 }

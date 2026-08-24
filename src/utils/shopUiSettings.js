@@ -1,9 +1,17 @@
 const { getShopSettings, setShopSettings, ensureShopSettings } = require('./shopSettings')
 const {
-  resolveShopMapEmbedUrl,
+  resolveShopMapEmbedUrlDetailed,
   resolveShopMapEmbedUrlSync,
   isShortGoogleMapsUrl,
 } = require('./googleMapEmbed')
+
+function logShopMapEmbed(action, data = {}) {
+  try {
+    console.log('[map-embed]', action, JSON.stringify(data))
+  } catch {
+    console.log('[map-embed]', action)
+  }
+}
 
 const UI_DEFAULTS = {
   ui_brand_main: 'Nail',
@@ -99,7 +107,14 @@ async function maybeAutoResolveMapEmbed(poolOrClient, shopId, settings) {
   const embedUrl = String(settings.ui_shop_map_embed_url || '').trim()
 
   if (isShortGoogleMapsUrl(mapUrl) || !embedUrl) {
-    const resolved = await resolveShopMapEmbedUrl(mapUrl, '')
+    const { embed: resolved, debug } = await resolveShopMapEmbedUrlDetailed(mapUrl, '')
+    logShopMapEmbed('auto_resolve', {
+      shop_id: shopId,
+      map_url: mapUrl,
+      had_embed: !!embedUrl,
+      resolved: !!resolved,
+      steps: debug?.steps?.length || 0,
+    })
     if (!resolved) return settings
     if (resolved === embedUrl) return settings
     await setShopSettings(poolOrClient, shopId, { ui_shop_map_embed_url: resolved })
@@ -108,6 +123,7 @@ async function maybeAutoResolveMapEmbed(poolOrClient, shopId, settings) {
 
   const syncResolved = resolveShopMapEmbedUrlSync(mapUrl, '')
   if (syncResolved && syncResolved !== embedUrl) {
+    logShopMapEmbed('auto_resolve_sync', { shop_id: shopId, map_url: mapUrl })
     await setShopSettings(poolOrClient, shopId, { ui_shop_map_embed_url: syncResolved })
     return { ...settings, ui_shop_map_embed_url: syncResolved }
   }
@@ -133,9 +149,17 @@ async function setUiSettings(poolOrClient, shopId, partial) {
     const mapUrl = String(partial.ui_shop_map_url ?? '').trim()
     if (!mapUrl) {
       entries.ui_shop_map_embed_url = ''
+      logShopMapEmbed('save_clear', { shop_id: shopId })
     } else {
-      const resolved = await resolveShopMapEmbedUrl(mapUrl, '')
+      const { embed: resolved, debug } = await resolveShopMapEmbedUrlDetailed(mapUrl, '')
       entries.ui_shop_map_embed_url = resolved || ''
+      logShopMapEmbed('save_resolve', {
+        shop_id: shopId,
+        map_url: mapUrl,
+        resolved: !!resolved,
+        embed_url: resolved || '',
+        steps: debug?.steps || [],
+      })
     }
   }
 

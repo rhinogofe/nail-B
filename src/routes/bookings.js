@@ -16,6 +16,7 @@ const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../ut
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
+const { resolveShopMapEmbedUrlDetailed } = require('../utils/googleMapEmbed')
 const { readUiImageFile, MIME_EXT, isAllowedKind } = require('../utils/shopUiImages')
 const { getShopSetting } = require('../utils/shopSettings')
 const {
@@ -96,12 +97,38 @@ router.get('/ui-settings', async (req, res) => {
 router.get('/map-embed', async (req, res) => {
   try {
     const pool = getPool()
-    const settings = await getUiSettings(pool, req.shop.id)
+    const shopId = req.shop.id
+    const shopSlug = req.shop.slug
+    const settings = await getUiSettings(pool, shopId)
+    const mapUrl = settings.ui_shop_map_url || ''
+    const embedUrl = settings.ui_shop_map_embed_url || ''
+
+    let debug = null
+    if (!embedUrl && mapUrl) {
+      const result = await resolveShopMapEmbedUrlDetailed(mapUrl, '')
+      debug = result.debug
+      console.log('[map-embed]', 'api_map_embed_empty', JSON.stringify({
+        shop_id: shopId,
+        shop_slug: shopSlug,
+        map_url: mapUrl,
+        steps: debug?.steps || [],
+      }))
+    } else {
+      console.log('[map-embed]', 'api_map_embed', JSON.stringify({
+        shop_id: shopId,
+        shop_slug: shopSlug,
+        has_map: !!mapUrl,
+        has_embed: !!embedUrl,
+      }))
+    }
+
     res.json({
-      map_url: settings.ui_shop_map_url || '',
-      embed_url: settings.ui_shop_map_embed_url || '',
+      map_url: mapUrl,
+      embed_url: embedUrl,
+      debug,
     })
   } catch (err) {
+    console.error('[map-embed]', 'api_map_embed_error', err.message)
     res.status(500).json({ error: err.message })
   }
 })
