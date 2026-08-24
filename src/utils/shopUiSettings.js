@@ -1,5 +1,9 @@
 const { getShopSettings, setShopSettings, ensureShopSettings } = require('./shopSettings')
-const { resolveShopMapEmbedUrl, resolveShopMapEmbedUrlSync } = require('./googleMapEmbed')
+const {
+  resolveShopMapEmbedUrl,
+  resolveShopMapEmbedUrlSync,
+  isShortGoogleMapsUrl,
+} = require('./googleMapEmbed')
 
 const UI_DEFAULTS = {
   ui_brand_main: 'Nail',
@@ -93,19 +97,22 @@ async function maybeAutoResolveMapEmbed(poolOrClient, shopId, settings) {
   if (!mapUrl) return settings
 
   const embedUrl = String(settings.ui_shop_map_embed_url || '').trim()
+
+  if (isShortGoogleMapsUrl(mapUrl) || !embedUrl) {
+    const resolved = await resolveShopMapEmbedUrl(mapUrl, '')
+    if (!resolved) return settings
+    if (resolved === embedUrl) return settings
+    await setShopSettings(poolOrClient, shopId, { ui_shop_map_embed_url: resolved })
+    return { ...settings, ui_shop_map_embed_url: resolved }
+  }
+
   const syncResolved = resolveShopMapEmbedUrlSync(mapUrl, '')
   if (syncResolved && syncResolved !== embedUrl) {
     await setShopSettings(poolOrClient, shopId, { ui_shop_map_embed_url: syncResolved })
     return { ...settings, ui_shop_map_embed_url: syncResolved }
   }
 
-  if (embedUrl) return settings
-
-  const resolved = await resolveShopMapEmbedUrl(mapUrl, '')
-  if (!resolved) return settings
-
-  await setShopSettings(poolOrClient, shopId, { ui_shop_map_embed_url: resolved })
-  return { ...settings, ui_shop_map_embed_url: resolved }
+  return settings
 }
 
 async function getUiSettings(poolOrClient, shopId) {
