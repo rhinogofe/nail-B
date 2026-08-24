@@ -126,13 +126,13 @@ function buildEmbedFromLocation(location, apiKey = '') {
 
   if (location.lat && location.lng) {
     const q = `${location.lat},${location.lng}`
-    return `https://www.google.com/maps?q=${encodeURIComponent(q)}&hl=th&z=16&output=embed`
+    return `https://maps.google.com/maps?q=${encodeURIComponent(q)}&hl=th&z=16&output=embed`
   }
   if (location.query) {
-    return `https://www.google.com/maps?q=${encodeURIComponent(location.query)}&hl=th&z=16&output=embed`
+    return `https://maps.google.com/maps?q=${encodeURIComponent(location.query)}&hl=th&z=16&output=embed`
   }
   if (location.placeId) {
-    return `https://www.google.com/maps?q=${encodeURIComponent(`place_id:${location.placeId}`)}&hl=th&z=16&output=embed`
+    return `https://maps.google.com/maps?q=${encodeURIComponent(`place_id:${location.placeId}`)}&hl=th&z=16&output=embed`
   }
 
   return ''
