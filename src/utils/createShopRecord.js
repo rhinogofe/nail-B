@@ -1,5 +1,6 @@
 const { ensureShopSettings } = require('./shopSettings')
 const { ensureUiSettings, setUiSettings } = require('./shopUiSettings')
+const { applyDefaultFeaturesToNewShop } = require('./shopFeatureFlags')
 const { computeBookUntilDate, todayYmdBangkok } = require('./bookingWindow')
 
 const DEFAULT_SETTINGS = {
@@ -64,6 +65,7 @@ async function createShopRecord(client, { slug, name, uiSettings = null, usageLi
     book_until_date: computeBookUntilDate(30, todayYmdBangkok()),
   })
   await ensureUiSettings(client, shop.id)
+  await applyDefaultFeaturesToNewShop(client, shop.id)
   if (uiSettings && Object.keys(uiSettings).length) {
     await setUiSettings(client, shop.id, uiSettings)
   }

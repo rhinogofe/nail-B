@@ -4063,6 +4063,7 @@ router.delete('/chat/messages/:messageId', async (req, res) => {
 
 router.use('/usage-renewal', require('./adminUsageRenewal'))
 router.use('/bookings/payment-slips', require('./adminBookingPaymentSlips'))
+router.use('/shop-features', require('./adminShopFeatures'))
 
 router.get('/settings/booking-slip-retention', async (req, res) => {
   if (!req.isSuperAdmin) {

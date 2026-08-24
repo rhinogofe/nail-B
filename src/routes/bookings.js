@@ -16,6 +16,7 @@ const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../ut
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
+const { getShopFeatureFlags } = require('../utils/shopFeatureFlags')
 const { resolveShopMapEmbedUrlDetailed } = require('../utils/googleMapEmbed')
 const { readUiImageFile, MIME_EXT, isAllowedKind } = require('../utils/shopUiImages')
 const { getShopSetting } = require('../utils/shopSettings')
@@ -88,7 +89,8 @@ router.get('/ui-settings', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await getUiSettings(pool, req.shop.id)
-    res.json(settings)
+    const { features: shop_features } = await getShopFeatureFlags(pool, req.shop.id)
+    res.json({ ...settings, shop_features })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
