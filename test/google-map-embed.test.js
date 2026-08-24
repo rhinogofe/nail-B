@@ -47,7 +47,17 @@ test('resolveShopMapEmbedUrlSync keeps official embed URL', () => {
   assert.equal(resolveShopMapEmbedUrlSync('', official), official)
 })
 
-test('isShortGoogleMapsUrl detects goo.gl links', () => {
-  assert.equal(isShortGoogleMapsUrl('https://maps.app.goo.gl/abc123'), true)
-  assert.equal(isShortGoogleMapsUrl('https://www.google.com/maps/place/x'), false)
+test('parseGoogleMapsLocation reads /maps/search/lat,+lng from mobile shortlink', () => {
+  assert.deepEqual(
+    parseGoogleMapsLocation('https://www.google.com/maps/search/59.916239,+10.789837?entry=tts'),
+    { lat: '59.916239', lng: '10.789837' }
+  )
+})
+
+test('resolveShopMapEmbedUrl resolves maps.app.goo.gl after redirect', async () => {
+  const { resolveShopMapEmbedUrl } = require('../src/utils/googleMapEmbed')
+  const embed = await resolveShopMapEmbedUrl('https://maps.app.goo.gl/KmEWjc5T2jB24hw16', '')
+  assert.match(embed, /59\.916239/)
+  assert.match(embed, /10\.789837/)
+  assert.match(embed, /output=embed/)
 })

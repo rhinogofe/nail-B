@@ -81,6 +81,10 @@ function parseGoogleMapsLocation(url) {
 
   try {
     const u = new URL(raw)
+    const searchPathMatch = u.pathname.match(/\/maps\/search\/(-?\d+(?:\.\d+)?),\+?(-?\d+(?:\.\d+)?)/)
+    if (searchPathMatch) {
+      return { lat: searchPathMatch[1], lng: searchPathMatch[2] }
+    }
     const q = u.searchParams.get('q') || u.searchParams.get('query')
     if (q) {
       const coords = parseCoordinatePair(q)
