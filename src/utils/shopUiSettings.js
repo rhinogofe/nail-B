@@ -1,4 +1,5 @@
 const { getShopSettings, setShopSettings, ensureShopSettings } = require('./shopSettings')
+const { resolveShopMapEmbedUrl } = require('./googleMapEmbed')
 
 const UI_DEFAULTS = {
   ui_brand_main: 'Nail',
@@ -87,9 +88,22 @@ function mergeUiSettings(raw = {}) {
   return merged
 }
 
+async function maybeAutoResolveMapEmbed(poolOrClient, shopId, settings) {
+  const mapUrl = String(settings.ui_shop_map_url || '').trim()
+  const embedUrl = String(settings.ui_shop_map_embed_url || '').trim()
+  if (!mapUrl || embedUrl) return settings
+
+  const resolved = await resolveShopMapEmbedUrl(mapUrl, '')
+  if (!resolved) return settings
+
+  await setShopSettings(poolOrClient, shopId, { ui_shop_map_embed_url: resolved })
+  return { ...settings, ui_shop_map_embed_url: resolved }
+}
+
 async function getUiSettings(poolOrClient, shopId) {
   const map = await getShopSettings(poolOrClient, shopId, UI_KEYS)
-  return mergeUiSettings(map)
+  const merged = mergeUiSettings(map)
+  return maybeAutoResolveMapEmbed(poolOrClient, shopId, merged)
 }
 
 async function setUiSettings(poolOrClient, shopId, partial) {
@@ -99,6 +113,19 @@ async function setUiSettings(poolOrClient, shopId, partial) {
       entries[key] = partial[key] == null ? '' : String(partial[key])
     }
   }
+
+  if (Object.prototype.hasOwnProperty.call(partial, 'ui_shop_map_url')) {
+    const mapUrl = String(partial.ui_shop_map_url ?? '').trim()
+    const adminSetEmbed = Object.prototype.hasOwnProperty.call(partial, 'ui_shop_map_embed_url')
+
+    if (!mapUrl) {
+      if (!adminSetEmbed) entries.ui_shop_map_embed_url = ''
+    } else if (!adminSetEmbed) {
+      const resolved = await resolveShopMapEmbedUrl(mapUrl, '')
+      if (resolved) entries.ui_shop_map_embed_url = resolved
+    }
+  }
+
   if (Object.keys(entries).length) {
     await setShopSettings(poolOrClient, shopId, entries)
   }
