@@ -2,7 +2,8 @@ const router = require('express').Router()
 const auth = require('../middleware/authMiddleware')
 const admin = require('../middleware/adminMiddleware')
 const { getPool } = require('../db/pool')
-const { isSuperAdmin } = require('../utils/shopAdmins')
+const { isSuperAdmin, demoteOrphanShopAdmins } = require('../utils/shopAdmins')
+const { collectShopFileRefs, purgeShopUploadFiles } = require('../utils/deleteShopFiles')
 const { createShopRecord } = require('../utils/createShopRecord')
 const { getUiSettings, UI_DEFAULTS } = require('../utils/shopUiSettings')
 const { enrichShopUsage, parseUsageLimitDays } = require('../utils/shopUsageLimit')
@@ -308,8 +309,17 @@ router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => 
     }
 
     const client = await pool.connect()
+    let fileRefs = null
     try {
       await client.query('BEGIN')
+      fileRefs = await collectShopFileRefs(client, shopId)
+
+      const branchAdmins = await client.query(
+        `SELECT user_id FROM shop_admins WHERE shop_id = $1`,
+        [shopId],
+      )
+      const branchAdminIds = branchAdmins.rows.map((row) => row.user_id)
+
       if (bookingsTotal > 0) {
         await client.query(
           `DELETE FROM point_logs
@@ -323,9 +333,23 @@ router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => 
       )
       if (!deleted.rows[0]) {
         await client.query('ROLLBACK')
+        fileRefs = null
         return res.status(404).json({ error: 'ไม่พบร้าน' })
       }
+
+      const demotedAdminIds = await demoteOrphanShopAdmins(client, branchAdminIds)
+
       await client.query('COMMIT')
+
+      let fileCleanup = null
+      if (fileRefs) {
+        try {
+          fileCleanup = await purgeShopUploadFiles(fileRefs)
+        } catch (err) {
+          fileCleanup = { errors: [{ type: 'purge', error: err.message }] }
+        }
+      }
+
       res.json({
         success: true,
         soft_deleted: false,
@@ -333,6 +357,8 @@ router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => 
         slug: deleted.rows[0].slug,
         name: deleted.rows[0].name,
         booking_count: bookingsTotal,
+        demoted_admin_count: demotedAdminIds.length,
+        file_cleanup: fileCleanup,
         message:
           bookingsTotal > 0
             ? `ลบสาขา ${deleted.rows[0].name} และข้อมูลจอง ${bookingsTotal} รายการถาวรแล้ว`

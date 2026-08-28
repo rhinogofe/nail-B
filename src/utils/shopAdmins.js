@@ -191,6 +191,30 @@ async function attachAdminShopFields(poolOrClient, userRow) {
   return { ...userRow, ...info }
 }
 
+async function demoteOrphanShopAdmins(poolOrClient, userIds = null) {
+  const ids = Array.isArray(userIds) ? userIds.filter(Boolean) : null
+  if (ids && !ids.length) return []
+
+  const params = []
+  let userFilter = ''
+  if (ids?.length) {
+    params.push(ids)
+    userFilter = `AND users.id = ANY($${params.length}::uuid[])`
+  }
+
+  const result = await poolOrClient.query(
+    `
+      UPDATE users SET is_admin = false
+      WHERE is_admin = true
+        AND NOT EXISTS (SELECT 1 FROM shop_admins sa WHERE sa.user_id = users.id)
+        ${userFilter}
+      RETURNING id
+    `,
+    params,
+  )
+  return result.rows.map((row) => row.id)
+}
+
 module.exports = {
   isSuperAdmin,
   canManageShop,
@@ -201,4 +225,5 @@ module.exports = {
   resolveAdminAssignmentPermission,
   syncShopAdminAssignment,
   attachAdminShopFields,
+  demoteOrphanShopAdmins,
 }

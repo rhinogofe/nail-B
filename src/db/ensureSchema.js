@@ -599,15 +599,11 @@ async function ensureSchema() {
       AND sa.shop_id != sa_default.shop_id
   `)
 
-  // New admins without shop assignment → default shop (super admin)
+  // Admins with no shop assignment should not stay is_admin (previously auto-linked to default).
   await pool.query(`
-    INSERT INTO shop_admins (shop_id, user_id)
-    SELECT s.id, u.id
-    FROM shops s
-    CROSS JOIN users u
-    WHERE s.slug = 'default' AND u.is_admin = true
-      AND NOT EXISTS (SELECT 1 FROM shop_admins sa WHERE sa.user_id = u.id)
-    ON CONFLICT DO NOTHING
+    UPDATE users SET is_admin = false
+    WHERE is_admin = true
+      AND NOT EXISTS (SELECT 1 FROM shop_admins sa WHERE sa.user_id = users.id)
   `)
 
   const { ensureUiSettings } = require('../utils/shopUiSettings')
