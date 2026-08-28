@@ -6,6 +6,11 @@ const { isSuperAdmin } = require('../utils/shopAdmins')
 const { createShopRecord } = require('../utils/createShopRecord')
 const { getUiSettings, UI_DEFAULTS } = require('../utils/shopUiSettings')
 const { enrichShopUsage, parseUsageLimitDays } = require('../utils/shopUsageLimit')
+const {
+  parseIconSize,
+  renderShopIconPng,
+  buildShopBranding,
+} = require('../utils/shopIcon')
 
 const SHOP_RETURN = 'id, slug, name, is_active, created_at, usage_limit_days, usage_started_at'
 
@@ -85,6 +90,68 @@ router.get('/:slug/share-preview', async (req, res) => {
 
     res.set('Cache-Control', 'public, max-age=300')
     res.json({ title, description, image, url })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/:slug/branding', async (req, res) => {
+  const slug = req.params.slug.toLowerCase()
+  if (!SLUG_RE.test(slug)) {
+    return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
+  }
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT id, slug, name FROM shops WHERE slug = $1 LIMIT 1`,
+      [slug],
+    )
+    const shop = result.rows[0]
+    if (!shop) {
+      return res.status(404).json({ error: 'ไม่พบร้าน' })
+    }
+
+    const ui = await getUiSettings(pool, shop.id)
+    res.set('Cache-Control', 'public, max-age=300')
+    res.json(buildShopBranding(req, shop, ui))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/:slug/icon/:size.png', async (req, res) => {
+  const slug = req.params.slug.toLowerCase()
+  const size = parseIconSize(req.params.size)
+  if (!SLUG_RE.test(slug)) {
+    return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
+  }
+  if (!size) {
+    return res.status(400).json({ error: 'ขนาดไอคอนไม่รองรับ' })
+  }
+
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT id, slug, name FROM shops WHERE slug = $1 LIMIT 1`,
+      [slug],
+    )
+    const shop = result.rows[0]
+    if (!shop) {
+      return res.status(404).json({ error: 'ไม่พบร้าน' })
+    }
+
+    const ui = await getUiSettings(pool, shop.id)
+    const png = await renderShopIconPng({
+      shopId: shop.id,
+      shopName: shop.name,
+      ui,
+      size,
+    })
+
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.send(png)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -203,6 +270,11 @@ router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => 
     return res.status(400).json({ error: 'ไม่สามารถลบร้าน default ได้' })
   }
 
+  const force =
+    req.query.force === 'true' ||
+    req.query.force === '1' ||
+    req.body?.force === true
+
   try {
     const pool = getPool()
     const existing = await pool.query(
@@ -218,7 +290,9 @@ router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => 
       `SELECT COUNT(*)::int AS count FROM bookings WHERE shop_id = $1`,
       [shopId]
     )
-    if (bookingCount.rows[0]?.count > 0) {
+    const bookingsTotal = bookingCount.rows[0]?.count || 0
+
+    if (bookingsTotal > 0 && !force) {
       const result = await pool.query(
         `UPDATE shops SET is_active = false WHERE slug = $1
          RETURNING id, slug, name, is_active, created_at`,
@@ -227,14 +301,49 @@ router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => 
       return res.json({
         success: true,
         soft_deleted: true,
-        message: 'ร้านมีข้อมูลการจอง — ปิดใช้งานแทนการลบถาวร',
+        message: 'ร้านมีข้อมูลการจอง — ปิดใช้งานแทนการลบถาวร (ส่ง ?force=true เพื่อลบถาวร)',
         shop: result.rows[0],
+        booking_count: bookingsTotal,
       })
     }
 
-    await pool.query(`DELETE FROM shop_admins WHERE shop_id = $1`, [shopId])
-    await pool.query(`DELETE FROM shops WHERE id = $1`, [shopId])
-    res.json({ success: true, soft_deleted: false, slug })
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      if (bookingsTotal > 0) {
+        await client.query(
+          `DELETE FROM point_logs
+           WHERE booking_id IN (SELECT id FROM bookings WHERE shop_id = $1)`,
+          [shopId]
+        )
+      }
+      const deleted = await client.query(
+        `DELETE FROM shops WHERE id = $1 RETURNING slug, name`,
+        [shopId]
+      )
+      if (!deleted.rows[0]) {
+        await client.query('ROLLBACK')
+        return res.status(404).json({ error: 'ไม่พบร้าน' })
+      }
+      await client.query('COMMIT')
+      res.json({
+        success: true,
+        soft_deleted: false,
+        permanent: true,
+        slug: deleted.rows[0].slug,
+        name: deleted.rows[0].name,
+        booking_count: bookingsTotal,
+        message:
+          bookingsTotal > 0
+            ? `ลบสาขา ${deleted.rows[0].name} และข้อมูลจอง ${bookingsTotal} รายการถาวรแล้ว`
+            : `ลบสาขา ${deleted.rows[0].name} ถาวรแล้ว`,
+      })
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

@@ -1753,7 +1753,7 @@ router.patch('/settings/register-pin', async (req, res) => {
   try {
     const pool = getPool()
     const pin = await setRegisterShopPin(pool, req.body?.pin)
-    res.json({ success: true, pin, configured: true })
+    res.json({ success: true, pin, configured: isValidPin(pin) })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })

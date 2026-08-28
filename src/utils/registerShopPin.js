@@ -46,15 +46,19 @@ async function verifyRegisterShopPin(poolOrClient, input) {
 
 async function setRegisterShopPin(poolOrClient, rawPin) {
   const pin = normalizePin(rawPin)
-  if (!isValidPin(pin)) {
-    const err = new Error('รหัสต้องเป็นตัวเลข 4 หลัก')
-    err.status = 400
-    throw err
-  }
   const shopId = await getDefaultShopId(poolOrClient)
   if (!shopId) {
     const err = new Error('ไม่พบร้าน default')
     err.status = 500
+    throw err
+  }
+  if (!pin) {
+    await setShopSetting(poolOrClient, shopId, SETTING_KEY, '')
+    return ''
+  }
+  if (!isValidPin(pin)) {
+    const err = new Error('รหัสต้องเป็นตัวเลข 4 หลัก')
+    err.status = 400
     throw err
   }
   await setShopSetting(poolOrClient, shopId, SETTING_KEY, pin)
