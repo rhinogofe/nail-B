@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS = {
   booking_slot_hours: '2',
   extend_booking_by_services: 'false',
   extend_booking_past_close: 'false',
+  booking_min_gap_enabled: 'false',
+  booking_min_gap_minutes: '60',
   coupon_discount_percent: '20',
   coupon_required_points: '100',
   coupon_completion_points: '10',

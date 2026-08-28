@@ -268,11 +268,13 @@ async function validateDynamicBookingStart(
   slotHours,
   excludeBookingId = null
 ) {
-  const [bookings, blocks, dayWindows, shopHours] = await Promise.all([
+  const { getEffectiveBookingMinGapMinutes } = require('./bookingMinGapSettings')
+  const [bookings, blocks, dayWindows, shopHours, minGapMinutes] = await Promise.all([
     fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate),
     fetchBlocksForDynamicSlots(poolOrClient, shopId, bookingDate),
     getDayHoursForDate(poolOrClient, shopId, bookingDate),
     getShopHours(poolOrClient, shopId),
+    getEffectiveBookingMinGapMinutes(poolOrClient, shopId),
   ])
 
   const available = buildDynamicBookableSlots({
@@ -283,6 +285,7 @@ async function validateDynamicBookingStart(
     openHour: shopHours.openHour,
     lastBookingHour: shopHours.lastBookingHour,
     excludeBookingId,
+    minGapMinutes,
   })
 
   if (!matchesDynamicSlotStart(baseSlot, available)) {

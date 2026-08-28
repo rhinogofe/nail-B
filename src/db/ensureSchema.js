@@ -518,6 +518,8 @@ async function ensureSchema() {
       ('booking_slot_hours', '2'),
       ('extend_booking_by_services', 'false'),
       ('extend_booking_past_close', 'false'),
+      ('booking_min_gap_enabled', 'false'),
+      ('booking_min_gap_minutes', '60'),
       ('shop_register_pin', '')
     ) AS d(setting_key, setting_value)
     ON CONFLICT (shop_id, setting_key) DO NOTHING

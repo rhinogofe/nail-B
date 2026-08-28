@@ -1923,6 +1923,50 @@ router.get('/settings/extend-booking-by-services', async (req, res) => {
   }
 })
 
+router.get('/settings/booking-min-gap', async (req, res) => {
+  try {
+    const pool = getPool()
+    const { getBookingMinGapSettings } = require('../utils/bookingMinGapSettings')
+    const settings = await getBookingMinGapSettings(pool, req.shop.id)
+    res.json(settings)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/settings/booking-min-gap', async (req, res) => {
+  const hasEnabled = typeof req.body?.enabled === 'boolean'
+  const hasMinutes = req.body?.minutes != null
+
+  if (!hasEnabled && !hasMinutes) {
+    return res.status(400).json({ error: 'ต้องระบุค่าที่ต้องการบันทึก' })
+  }
+
+  try {
+    const pool = getPool()
+    const { normalizeBookingMinGapMinutes, getBookingMinGapSettings } = require('../utils/bookingMinGapSettings')
+
+    if (hasEnabled) {
+      await setShopSetting(
+        pool,
+        req.shop.id,
+        'booking_min_gap_enabled',
+        req.body.enabled ? 'true' : 'false'
+      )
+    }
+    if (hasMinutes) {
+      const minutes = normalizeBookingMinGapMinutes(req.body.minutes)
+      await setShopSetting(pool, req.shop.id, 'booking_min_gap_minutes', String(minutes))
+    }
+
+    const settings = await getBookingMinGapSettings(pool, req.shop.id)
+    emitShopLive(req.shop.id, 'schedule')
+    res.json({ success: true, ...settings })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.patch('/settings/extend-booking-by-services', async (req, res) => {
   const hasEnabled = typeof req.body?.enabled === 'boolean'
   const hasPastClose = typeof req.body?.past_close_enabled === 'boolean'

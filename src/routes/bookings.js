@@ -165,13 +165,19 @@ router.get('/shop-hours', auth, async (req, res) => {
     const pool = getPool()
     const hours = await getShopHours(pool, req.shop.id)
     const { getExtendBookingSettings } = require('../utils/extendBookingSettings')
-    const extendSettings = await getExtendBookingSettings(pool, req.shop.id)
+    const { getBookingMinGapSettings } = require('../utils/bookingMinGapSettings')
+    const [extendSettings, minGapSettings] = await Promise.all([
+      getExtendBookingSettings(pool, req.shop.id),
+      getBookingMinGapSettings(pool, req.shop.id),
+    ])
     res.json({
       open_hour: hours.openHour,
       last_booking_hour: hours.lastBookingHour,
       slot_hours: hours.slotHours,
       extend_booking_by_services: extendSettings.enabled,
       extend_booking_past_close: extendSettings.pastCloseEnabled,
+      booking_min_gap_enabled: minGapSettings.enabled,
+      booking_min_gap_minutes: minGapSettings.minutes,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
