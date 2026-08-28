@@ -10,6 +10,38 @@ function isValidPin(pin) {
   return /^\d{4}$/.test(String(pin || ''))
 }
 
+function normalizeRegisterPhone(raw) {
+  let digits = String(raw || '').replace(/\D/g, '')
+  if (digits.startsWith('66') && digits.length === 11) {
+    digits = `0${digits.slice(2)}`
+  }
+  if (digits.length > 10) {
+    digits = digits.slice(-10)
+  }
+  return digits
+}
+
+function isValidRegisterPhone(phone) {
+  return /^0\d{9}$/.test(String(phone || ''))
+}
+
+async function isRegisterOwnerPhoneTaken(poolOrClient, phone) {
+  const normalized = normalizeRegisterPhone(phone)
+  if (!isValidRegisterPhone(normalized)) return false
+
+  const result = await poolOrClient.query(
+    `
+      SELECT 1
+      FROM users
+      WHERE provider = 'phone'
+        AND provider_id = $1
+      LIMIT 1
+    `,
+    [normalized],
+  )
+  return result.rows.length > 0
+}
+
 async function getDefaultShopId(poolOrClient) {
   const result = await poolOrClient.query(
     `SELECT id FROM shops WHERE slug = 'default' LIMIT 1`
@@ -69,6 +101,9 @@ module.exports = {
   SETTING_KEY,
   normalizePin,
   isValidPin,
+  normalizeRegisterPhone,
+  isValidRegisterPhone,
+  isRegisterOwnerPhoneTaken,
   getRegisterShopPin,
   isRegisterShopEnabled,
   verifyRegisterShopPin,

@@ -36,10 +36,10 @@ test('extend booking settings parse truthy strings', () => {
   assert.equal(isExtendByServicesEnabled({ extend_booking_by_services: 'false' }), false)
   assert.equal(isExtendPastCloseEnabled({ extend_booking_past_close: 'true' }), true)
 })
-
 test('register shop pin normalization', () => {
   assert.equal(normalizePin('12ab34'), '1234')
   assert.equal(isValidPin('1234'), true)
   assert.equal(isValidPin('123'), false)
   assert.equal(isValidPin('abcd'), false)
 })
+

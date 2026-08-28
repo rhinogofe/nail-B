@@ -9,6 +9,9 @@ const { UI_KEYS } = require('../utils/shopUiSettings')
 const {
   isRegisterShopEnabled,
   verifyRegisterShopPin,
+  normalizeRegisterPhone,
+  isValidRegisterPhone,
+  isRegisterOwnerPhoneTaken,
 } = require('../utils/registerShopPin')
 
 const providerEnv = {
@@ -119,6 +122,48 @@ router.post('/verify-register-pin', async (req, res) => {
     }
     res.json({ success: true })
   } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/register-shop-owner', async (req, res) => {
+  const name = normalizeLoginName(req.body?.name)
+  const phone = normalizeRegisterPhone(req.body?.phone)
+
+  if (!name) {
+    return res.status(400).json({ error: 'กรุณากรอกชื่อ' })
+  }
+  if (!isValidRegisterPhone(phone)) {
+    return res.status(400).json({ error: 'กรุณากรอกเบอร์โทร 10 หลัก (เช่น 0812345678)' })
+  }
+
+  try {
+    const pool = getPool()
+    if (!(await isRegisterShopEnabled(pool))) {
+      return res.status(503).json({ error: 'ยังไม่เปิดรับสมัครร้าน กรุณาติดต่อผู้ดูแลระบบ' })
+    }
+
+    if (await isRegisterOwnerPhoneTaken(pool, phone)) {
+      return res.status(409).json({
+        error: 'คุณสมัครร้านไปแล้ว1ครั้ง  ไม่สามารถสมัครร้านได้',
+      })
+    }
+
+    const created = await pool.query(
+      `INSERT INTO users (name, email, avatar_url, provider, provider_id)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [name, `${phone}@phone.local`, null, 'phone', phone],
+    )
+
+    const token = signToken(created.rows[0])
+    res.json({ token })
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({
+        error: 'คุณสมัครร้านไปแล้ว1ครั้ง  ไม่สามารถสมัครร้านได้',
+      })
+    }
     res.status(500).json({ error: err.message })
   }
 })
