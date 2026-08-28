@@ -76,7 +76,7 @@ const {
   isSuperAdmin: userIsSuperAdmin,
 } = require('../utils/shopAdmins')
 const { requireChatUserAccess } = require('../utils/chatAccess')
-const { emitBookingChanged, subscribeBookingEvents } = require('../utils/bookingEvents')
+const { emitBookingChanged, emitShopLive, attachShopEventStream } = require('../utils/bookingEvents')
 const { createChatMessage, buildLatestMessagesQuery } = require('../utils/chatMessages')
 const {
   ensureSystemChatUser,
@@ -200,6 +200,7 @@ async function assertSlotAvailable(client, shopId, bookingDate, slot, excludeId 
   if (hasOverlap) {
     const err = new Error('เวลานี้ทับกับคิวอื่น กรุณาเลือกเวลาใหม่')
     err.status = 409
+    err.code = 'SLOT_TAKEN'
     throw err
   }
 }
@@ -224,6 +225,7 @@ async function assertSlotNotBlocked(client, shopId, bookingDate, slot) {
   if (isBlocked) {
     const err = new Error('ช่วงเวลานี้ร้านปิดรับคิว')
     err.status = 409
+    err.code = 'SLOT_BLOCKED'
     throw err
   }
 }
@@ -302,25 +304,7 @@ function buildDateRange(startDate, dayCount) {
 }
 
 router.get('/bookings/events', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.flushHeaders?.()
-
-  res.write(': connected\n\n')
-
-  const unsubscribe = subscribeBookingEvents(req.shop.id, (event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`)
-  })
-
-  const heartbeat = setInterval(() => {
-    res.write(': heartbeat\n\n')
-  }, 30000)
-
-  req.on('close', () => {
-    clearInterval(heartbeat)
-    unsubscribe()
-  })
+  attachShopEventStream(req, res, req.shop.id)
 })
 
 router.get('/bookings', async (req, res) => {
@@ -691,6 +675,15 @@ router.patch('/bookings/:id/restore', async (req, res) => {
   const shopId = req.shop.id
   let restoredDate = null
 
+  const hasStartHour = Object.prototype.hasOwnProperty.call(req.body || {}, 'start_hour')
+  const hasBookingDate = Object.prototype.hasOwnProperty.call(req.body || {}, 'booking_date')
+  if (hasStartHour && !Number.isInteger(Number(req.body.start_hour))) {
+    return res.status(400).json({ error: 'start_hour ไม่ถูกต้อง' })
+  }
+  if (hasBookingDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.body.booking_date))) {
+    return res.status(400).json({ error: 'รูปแบบวันที่ไม่ถูกต้อง' })
+  }
+
   try {
     await withTransaction(async (client) => {
       const existing = await client.query(
@@ -705,20 +698,89 @@ router.patch('/bookings/:id/restore', async (req, res) => {
 
       const row = existing.rows[0]
       restoredDate = String(row.booking_date).slice(0, 10)
-      const { slot } = await resolveBookingSlot(client, shopId, {}, row)
-      await assertSlotAvailable(client, shopId, row.booking_date, slot, row.id)
+      const moving = hasStartHour || hasBookingDate
+      const targetDate = hasBookingDate ? String(req.body.booking_date) : restoredDate
 
-      await client.query(
-        `
-          UPDATE bookings
-          SET
-            status = $1,
-            completed_at = NULL,
-            created_at = CASE WHEN $1 = 'awaiting_payment' THEN NOW() ELSE created_at END
-          WHERE id = $2 AND shop_id = $3 AND status = 'cancelled'
-        `,
-        [targetStatus, row.id, shopId]
-      )
+      let slot
+      if (moving) {
+        const optionRes = await client.query(
+          `SELECT nailoption_id FROM booking_nailoptions WHERE booking_id = $1`,
+          [row.id]
+        )
+        const optionIds = optionRes.rows.map((r) => r.nailoption_id)
+        const slotHours = await getBookingSlotHours(client, shopId)
+        const slotBody = {
+          start_hour: hasStartHour ? req.body.start_hour : row.start_hour,
+          start_minute: req.body.start_minute ?? (hasStartHour ? 0 : (row.start_minute ?? 0)),
+        }
+        const slotError = await validateBookingSlot(client, shopId, targetDate, slotBody, slotHours, row.id)
+        if (slotError) {
+          const err = new Error(slotError)
+          err.status = 400
+          throw err
+        }
+        const finalized = await finalizeBookingSlotWithServices(
+          client,
+          shopId,
+          targetDate,
+          slotBody,
+          optionIds,
+          row.id
+        )
+        if (finalized.error) {
+          const err = new Error(finalized.error)
+          err.status = 400
+          throw err
+        }
+        slot = finalized.slot
+        restoredDate = targetDate
+      } else {
+        const resolved = await resolveBookingSlot(client, shopId, {}, row)
+        slot = resolved.slot
+      }
+
+      await assertSlotNotBlocked(client, shopId, targetDate, slot)
+      await assertSlotAvailable(client, shopId, targetDate, slot, row.id)
+
+      if (moving) {
+        await client.query(
+          `
+            UPDATE bookings
+            SET
+              status = $1,
+              booking_date = $2,
+              start_hour = $3,
+              start_minute = $4,
+              end_hour = $5,
+              end_minute = $6,
+              completed_at = NULL,
+              created_at = CASE WHEN $1 = 'awaiting_payment' THEN NOW() ELSE created_at END
+            WHERE id = $7 AND shop_id = $8 AND status = 'cancelled'
+          `,
+          [
+            targetStatus,
+            targetDate,
+            slot.startHour,
+            slot.startMinute,
+            slot.endHour,
+            slot.endMinute,
+            row.id,
+            shopId,
+          ]
+        )
+      } else {
+        await client.query(
+          `
+            UPDATE bookings
+            SET
+              status = $1,
+              completed_at = NULL,
+              created_at = CASE WHEN $1 = 'awaiting_payment' THEN NOW() ELSE created_at END
+            WHERE id = $2 AND shop_id = $3 AND status = 'cancelled'
+          `,
+          [targetStatus, row.id, shopId]
+        )
+      }
 
       if (targetStatus === 'awaiting_payment') {
         const { deletePaymentSlipByBookingId } = require('../utils/bookingPaymentSlips')
@@ -738,7 +800,7 @@ router.patch('/bookings/:id/restore', async (req, res) => {
       booking_date: restoredDate,
     })
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message })
+    if (err.status) return res.status(err.status).json({ error: err.message, code: err.code })
     res.status(500).json({ error: err.message })
   }
 })
@@ -921,6 +983,7 @@ router.post('/blocks', async (req, res) => {
         note || null,
       ]
     )
+    emitShopLive(shopId, 'schedule', { booking_date: block_date })
     res.status(201).json({ success: true, block: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1000,6 +1063,7 @@ router.post('/blocks/bulk', async (req, res) => {
     })
 
     const skipHint = fullDay ? 'วันที่ปิดทั้งวันอยู่แล้ว' : 'วันที่มีช่วงเวลานี้หรือปิดทั้งวันอยู่แล้ว'
+    emitShopLive(shopId, 'schedule')
     res.status(201).json({
       success: true,
       message: `ปิดรับคิวแล้ว ${result.created} วัน (ข้าม ${result.skipped} วัน — ${skipHint})`,
@@ -1022,6 +1086,7 @@ router.delete('/blocks/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการปิดวันเวลา' })
     }
+    emitShopLive(shopId, 'schedule')
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1083,6 +1148,7 @@ router.post('/extra-hours', async (req, res) => {
       `,
       [shopId, extra_date, start_hour, end_hour, note || null]
     )
+    emitShopLive(shopId, 'schedule', { booking_date: extra_date })
     res.status(201).json({ success: true, extra: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1101,6 +1167,7 @@ router.delete('/extra-hours/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบรายการเปิดเพิ่ม' })
     }
+    emitShopLive(shopId, 'schedule')
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1162,6 +1229,7 @@ router.post('/day-hours', async (req, res) => {
         validated.end_minute,
       ]
     )
+    emitShopLive(shopId, 'schedule', { booking_date: validated.scheduleDate })
     res.status(201).json(result.rows[0])
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1228,6 +1296,7 @@ router.post('/day-hours/generate-full-day', async (req, res) => {
       return inserted
     })
 
+    emitShopLive(shopId, 'schedule', { booking_date: scheduleDate })
     res.status(201).json({ success: true, count: rows.length, rows })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1330,6 +1399,7 @@ router.patch('/day-hours/:id', async (req, res) => {
       return result
     })
 
+    emitShopLive(shopId, 'schedule', { booking_date: scheduleDate })
     res.json({
       success: true,
       updated: updatedRows,
@@ -1345,10 +1415,13 @@ router.delete('/day-hours/:id', async (req, res) => {
   try {
     const pool = getPool()
     const result = await pool.query(
-      `DELETE FROM booking_day_hours WHERE id = $1 AND shop_id = $2 RETURNING id`,
+      `DELETE FROM booking_day_hours WHERE id = $1 AND shop_id = $2 RETURNING id, schedule_date`,
       [req.params.id, req.shop.id]
     )
     if (!result.rows.length) return res.status(404).json({ error: 'ไม่พบรายการ' })
+    emitShopLive(req.shop.id, 'schedule', {
+      booking_date: String(result.rows[0].schedule_date || '').slice(0, 10) || null,
+    })
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1374,6 +1447,7 @@ router.patch('/settings/deposit', async (req, res) => {
   try {
     const pool = getPool()
     await setShopSetting(pool, req.shop.id, 'deposit_amount', amount)
+    emitShopLive(req.shop.id, 'settings')
     res.json({ success: true, deposit_amount: amount })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1414,6 +1488,7 @@ router.patch('/settings/coupon', async (req, res) => {
       requiredPoints,
       completionPoints,
     })
+    emitShopLive(req.shop.id, 'settings')
     res.json({
       success: true,
       discount_percent: settings.discountPercent,
@@ -1713,6 +1788,7 @@ router.patch('/settings/unpaid-auto-cancel', async (req, res) => {
       unpaid_auto_cancel_enabled: enabled ? 'true' : 'false',
       unpaid_expire_hours: String(hours),
     })
+    emitShopLive(req.shop.id, 'settings')
     res.json({ success: true, enabled, expire_hours: hours })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1750,6 +1826,7 @@ router.patch('/settings/shop-hours', async (req, res) => {
       shop_open_hour: String(open),
       shop_last_booking_hour: String(last),
     })
+    emitShopLive(req.shop.id, 'schedule')
     res.json({ success: true, open_hour: open, last_booking_hour: last })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1780,6 +1857,7 @@ router.patch('/settings/advance-days', async (req, res) => {
       book_advance_days: String(days),
       book_until_date: bookUntil,
     })
+    emitShopLive(req.shop.id, 'schedule')
     res.json({ success: true, advance_days: days, book_until_date: bookUntil })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1802,6 +1880,7 @@ router.patch('/settings/booking-display', async (req, res) => {
   try {
     const pool = getPool()
     await setShopSetting(pool, req.shop.id, 'booking_display_mode', mode)
+    emitShopLive(req.shop.id, 'schedule')
     res.json({ success: true, display_mode: mode })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1823,6 +1902,7 @@ router.patch('/settings/booking-slot-hours', async (req, res) => {
   try {
     const pool = getPool()
     await setShopSetting(pool, req.shop.id, 'booking_slot_hours', String(slotHours))
+    emitShopLive(req.shop.id, 'schedule')
     res.json({ success: true, slot_hours: slotHours })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1833,16 +1913,10 @@ router.get('/settings/extend-booking-by-services', async (req, res) => {
   try {
     const pool = getPool()
     const { getExtendBookingSettings } = require('../utils/extendBookingSettings')
-    const { getUiSettings } = require('../utils/shopUiSettings')
-    const [settings, ui] = await Promise.all([
-      getExtendBookingSettings(pool, req.shop.id),
-      getUiSettings(pool, req.shop.id),
-    ])
+    const settings = await getExtendBookingSettings(pool, req.shop.id)
     res.json({
       enabled: settings.enabled,
       past_close_enabled: settings.pastCloseEnabled,
-      block_next_booking_message: ui.ui_extend_blocked_next_booking,
-      block_closing_message: ui.ui_extend_blocked_closing,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1852,10 +1926,8 @@ router.get('/settings/extend-booking-by-services', async (req, res) => {
 router.patch('/settings/extend-booking-by-services', async (req, res) => {
   const hasEnabled = typeof req.body?.enabled === 'boolean'
   const hasPastClose = typeof req.body?.past_close_enabled === 'boolean'
-  const hasNextMsg = typeof req.body?.block_next_booking_message === 'string'
-  const hasClosingMsg = typeof req.body?.block_closing_message === 'string'
 
-  if (!hasEnabled && !hasPastClose && !hasNextMsg && !hasClosingMsg) {
+  if (!hasEnabled && !hasPastClose) {
     return res.status(400).json({ error: 'ต้องระบุค่าที่ต้องการบันทึก' })
   }
 
@@ -1877,26 +1949,14 @@ router.patch('/settings/extend-booking-by-services', async (req, res) => {
         req.body.past_close_enabled ? 'true' : 'false'
       )
     }
-    if (hasNextMsg || hasClosingMsg) {
-      const { setUiSettings } = require('../utils/shopUiSettings')
-      const partial = {}
-      if (hasNextMsg) partial.ui_extend_blocked_next_booking = req.body.block_next_booking_message
-      if (hasClosingMsg) partial.ui_extend_blocked_closing = req.body.block_closing_message
-      await setUiSettings(pool, req.shop.id, partial)
-    }
 
     const { getExtendBookingSettings } = require('../utils/extendBookingSettings')
-    const { getUiSettings } = require('../utils/shopUiSettings')
-    const [settings, ui] = await Promise.all([
-      getExtendBookingSettings(pool, req.shop.id),
-      getUiSettings(pool, req.shop.id),
-    ])
+    const settings = await getExtendBookingSettings(pool, req.shop.id)
+    emitShopLive(req.shop.id, 'schedule')
     res.json({
       success: true,
       enabled: settings.enabled,
       past_close_enabled: settings.pastCloseEnabled,
-      block_next_booking_message: ui.ui_extend_blocked_next_booking,
-      block_closing_message: ui.ui_extend_blocked_closing,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1917,6 +1977,7 @@ router.patch('/settings/ui', async (req, res) => {
   try {
     const pool = getPool()
     const settings = await setUiSettings(pool, req.shop.id, req.body || {})
+    emitShopLive(req.shop.id, 'settings')
     res.json({ success: true, settings })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1952,6 +2013,7 @@ router.post('/settings/ui/upload', async (req, res) => {
     }
 
     const settings = await setUiSettings(pool, shopId, patch)
+    emitShopLive(shopId, 'settings')
     res.json({ success: true, kind, url: saved.url, settings })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -2996,6 +3058,7 @@ router.post('/service-categories', async (req, res) => {
       `,
       [shopId, name, description, sort_order, is_active]
     )
+    emitShopLive(shopId, 'options')
     res.status(201).json({ success: true, category: result.rows[0] })
   } catch (err) {
     if (err.code === '23505') {
@@ -3033,6 +3096,7 @@ router.patch('/service-categories/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบหมวดหมู่' })
     }
+    emitShopLive(shopId, 'options')
     res.json({ success: true, category: result.rows[0] })
   } catch (err) {
     if (err.code === '23505') {
@@ -3053,6 +3117,7 @@ router.delete('/service-categories/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบหมวดหมู่' })
     }
+    emitShopLive(shopId, 'options')
     res.json({ success: true, message: 'ลบหมวดหมู่แล้ว' })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -3151,6 +3216,7 @@ router.post('/nailoptions', async (req, res) => {
       `,
       [shopId, option_name, description, price, duration_min, is_active, is_required, colorParsed, showFromParsed, showToParsed, sort_order, categoryParsed]
     )
+    emitShopLive(shopId, 'options')
     res.status(201).json({ success: true, option: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -3212,6 +3278,7 @@ router.patch('/nailoptions/:id', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบรายการบริการ' })
     }
 
+    emitShopLive(shopId, 'options')
     res.json({ success: true, option: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -3292,6 +3359,7 @@ router.patch('/nailoptions/:id/move', async (req, res) => {
       )
     })
 
+    emitShopLive(shopId, 'options')
     res.json({ success: true, message: 'จัดลำดับแล้ว' })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })
@@ -3336,6 +3404,7 @@ router.delete('/nailoptions/:id', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบรายการบริการ' })
     }
 
+    emitShopLive(shopId, 'options')
     res.json({ success: true, message: 'ลบรายการบริการแล้ว' })
   } catch (err) {
     if (err.code === '23503') {
@@ -3400,6 +3469,7 @@ router.post('/service-locations', async (req, res) => {
       `,
       [shopId, name, colorParsed, description || `สถานที่ให้บริการ ${name}`, mapUrlParsed.value, sort_order, is_active]
     )
+    emitShopLive(shopId, 'options')
     res.status(201).json({ success: true, location: result.rows[0] })
   } catch (err) {
     if (err.code === '23505') {
@@ -3443,6 +3513,7 @@ router.patch('/service-locations/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบสถานที่' })
     }
+    emitShopLive(shopId, 'options')
     res.json({ success: true, location: result.rows[0] })
   } catch (err) {
     if (err.code === '23505') {
@@ -3463,6 +3534,7 @@ router.delete('/service-locations/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบสถานที่' })
     }
+    emitShopLive(shopId, 'options')
     res.json({ success: true, message: 'ลบสถานที่แล้ว' })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -3524,6 +3596,7 @@ router.post('/showcase-clips', async (req, res) => {
       [shopId, resolved.source, resolved.tiktok_url, resolved.video_id, title, thumbnail_url, sort_order, is_active]
     )
 
+    emitShopLive(shopId, 'reviews')
     res.status(201).json({ success: true, clip: result.rows[0] })
   } catch (err) {
     if (err.code === '23505') {
@@ -3600,6 +3673,7 @@ router.patch('/showcase-clips/:id', async (req, res) => {
       [source, tiktok_url, video_id, title, thumbnail_url, is_active, sort_order, req.params.id, shopId]
     )
 
+    emitShopLive(shopId, 'reviews')
     res.json({ success: true, clip: result.rows[0] })
   } catch (err) {
     if (err.code === '23505') {
@@ -3637,6 +3711,7 @@ router.post('/showcase-clips/:id/refresh-thumbnail', async (req, res) => {
       [thumbnail_url, req.params.id, shopId]
     )
 
+    emitShopLive(shopId, 'reviews')
     res.json({ success: true, message: 'ดึงรูปปกแล้ว', clip: result.rows[0] })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -3654,6 +3729,7 @@ router.delete('/showcase-clips/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'ไม่พบคลิป' })
     }
+    emitShopLive(shopId, 'reviews')
     res.json({ success: true, message: 'ลบคลิปแล้ว' })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -3700,6 +3776,7 @@ router.patch('/showcase-clips/:id/move', async (req, res) => {
       )
     })
 
+    emitShopLive(shopId, 'reviews')
     res.json({ success: true, message: 'จัดลำดับแล้ว' })
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message })

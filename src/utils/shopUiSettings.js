@@ -89,10 +89,15 @@ const UI_DEFAULTS = {
 }
 
 const UI_KEYS = Object.keys(UI_DEFAULTS)
+const UI_LOCKED_KEYS = new Set([
+  'ui_extend_blocked_next_booking',
+  'ui_extend_blocked_closing',
+])
 
 function mergeUiSettings(raw = {}) {
   const merged = { ...UI_DEFAULTS }
   for (const key of UI_KEYS) {
+    if (UI_LOCKED_KEYS.has(key)) continue
     if (raw[key] != null && String(raw[key]).trim() !== '') {
       merged[key] = String(raw[key])
     }
@@ -140,6 +145,7 @@ async function getUiSettings(poolOrClient, shopId) {
 async function setUiSettings(poolOrClient, shopId, partial) {
   const entries = {}
   for (const key of UI_KEYS) {
+    if (UI_LOCKED_KEYS.has(key)) continue
     if (Object.prototype.hasOwnProperty.call(partial, key)) {
       entries[key] = partial[key] == null ? '' : String(partial[key])
     }

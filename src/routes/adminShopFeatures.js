@@ -1,5 +1,6 @@
 const router = require('express').Router()
 const { getPool } = require('../db/pool')
+const { emitShopLive } = require('../utils/bookingEvents')
 const {
   SHOP_FEATURE_CATALOG,
   getShopFeatureFlags,
@@ -122,6 +123,7 @@ router.patch('/:slug', async (req, res) => {
     if (!shop) return res.status(404).json({ error: 'ไม่พบสาขา' })
 
     const { features, overrides } = await setShopFeatureFlags(pool, shop.id, partial)
+    emitShopLive(shop.id, 'settings')
     res.json({
       success: true,
       id: shop.id,

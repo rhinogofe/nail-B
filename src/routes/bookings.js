@@ -11,7 +11,7 @@ const {
 const { finalizeBookingSlotWithServices } = require('../utils/bookingServiceDuration')
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { notifyAdminNewBookingChat, notifyBookingCancelledChat, notifyAdminPaymentSlipChat } = require('../utils/bookingChatNotify')
-const { emitBookingChanged } = require('../utils/bookingEvents')
+const { emitBookingChanged, attachShopEventStream } = require('../utils/bookingEvents')
 const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
@@ -84,6 +84,10 @@ async function assertCustomerAwaitingPaymentBooking(pool, bookingId, shopId, use
 }
 
 router.use(resolveShop)
+
+router.get('/events', (req, res) => {
+  attachShopEventStream(req, res, req.shop.id)
+})
 
 router.get('/ui-settings', async (req, res) => {
   try {
@@ -566,6 +570,9 @@ router.get('/my', auth, async (req, res) => {
 
 router.get('/:id/payment-info', auth, async (req, res) => {
   try {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.id || ''))) {
+      return res.status(404).json({ error: 'ไม่พบคิว' })
+    }
     const pool = getPool()
     await expireUnpaidBookings(pool, req.shop.id)
     const settings = await getUnpaidExpireSettings(pool, req.shop.id)

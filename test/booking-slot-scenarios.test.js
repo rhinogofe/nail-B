@@ -114,6 +114,27 @@ test('scenario: custom day + extend + booking → dynamic packs after occupied t
 
 // ─── 5. Multiple windows — no gap packing ───
 
+test('scenario: touching hourly windows chain from extended end not next hour wall', () => {
+  const dayWindows = [
+    { start_hour: 13, start_minute: 0, end_hour: 14, end_minute: 0 },
+    { start_hour: 14, start_minute: 0, end_hour: 15, end_minute: 0 },
+    { start_hour: 15, start_minute: 0, end_hour: 16, end_minute: 0 },
+    { start_hour: 16, start_minute: 0, end_hour: 17, end_minute: 0 },
+  ]
+  const available = buildDynamicBookableSlots({
+    slotHours: 1,
+    bookings: [
+      { id: 1, start_hour: 13, start_minute: 0, end_hour: 14, end_minute: 20, status: 'pending' },
+    ],
+    blocks: [],
+    dayWindows,
+    openHour: 9,
+    lastBookingHour: 18,
+  })
+  assert.ok(available.some((s) => s.startM === 14 * 60 + 20 && s.endM === 15 * 60 + 20))
+  assert.equal(available.some((s) => s.startM === 15 * 60), false)
+})
+
 test('scenario: two windows — no slots in between gap', () => {
   const dayWindows = [
     { start_hour: 10, start_minute: 0, end_hour: 12, end_minute: 0 },
