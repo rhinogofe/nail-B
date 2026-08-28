@@ -26,6 +26,8 @@ const {
 
 const app = express()
 
+app.set('trust proxy', 1)
+
 app.use(cors(createCorsOptions()))
 
 app.use('/api/line/webhook', require('./routes/lineWebhook'))

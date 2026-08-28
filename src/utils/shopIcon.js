@@ -1,5 +1,6 @@
 const sharp = require('sharp')
 const { parseStoredUiImagePath, readUiImageFile } = require('./shopUiImages')
+const { resolvePublicApiBase } = require('./publicApiBase')
 
 const ICON_SIZES = new Set([32, 180, 192, 512])
 const FETCH_TIMEOUT_MS = 10000
@@ -129,9 +130,7 @@ async function renderShopIconPng({ shopId, shopName, ui, size }) {
 
 function buildShopBranding(req, shop, ui) {
   const version = logoIconVersion(ui.ui_logo_url)
-  const base = String(
-    process.env.API_PUBLIC_URL || `${req.protocol}://${req.get('host')}`,
-  ).replace(/\/$/, '')
+  const base = resolvePublicApiBase(req)
   return {
     name: shop.name,
     slug: shop.slug,

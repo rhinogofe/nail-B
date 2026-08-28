@@ -12,6 +12,7 @@ const {
   renderShopIconPng,
   buildShopBranding,
 } = require('../utils/shopIcon')
+const { resolvePublicApiBase } = require('../utils/publicApiBase')
 
 const SHOP_RETURN = 'id, slug, name, is_active, created_at, usage_limit_days, usage_started_at'
 
@@ -22,7 +23,7 @@ function frontendBaseUrl() {
 }
 
 function apiBaseUrl(req) {
-  return String(process.env.API_PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '')
+  return resolvePublicApiBase(req)
 }
 
 function buildShareImage(req, slug, ui) {
