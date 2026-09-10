@@ -75,9 +75,24 @@ async function getNewShopDefaultTemplate(poolOrClient) {
 async function getShopFeatureFlags(poolOrClient, shopId) {
   const shopKeys = ALL_FEATURE_KEYS.map((k) => featureSettingKey(k))
   const shopMap = await getShopSettings(poolOrClient, shopId, shopKeys)
+  const defaultShopId = await getDefaultShopId(poolOrClient)
+
+  // Default shop must not inherit the "new shop defaults" template — that template
+  // is only for newly created shops. Otherwise turning LINE off for new shops
+  // also hides LINE settings on the super-admin default shop.
+  if (defaultShopId && String(shopId) === String(defaultShopId)) {
+    const catalogTemplate = Object.fromEntries(
+      ALL_FEATURE_KEYS.map((k) => [featureDefaultSettingKey(k), catalogDefaultEnabled(k) ? '1' : '0']),
+    )
+    return {
+      features: buildResolvedFeatures(shopMap, catalogTemplate),
+      overrides: buildOverridesFromMap(shopMap),
+    }
+  }
+
   const template = await getNewShopDefaultTemplate(poolOrClient)
   const templateEntries = Object.fromEntries(
-    ALL_FEATURE_KEYS.map((k) => [featureDefaultSettingKey(k), template[k] ? '1' : '0'])
+    ALL_FEATURE_KEYS.map((k) => [featureDefaultSettingKey(k), template[k] ? '1' : '0']),
   )
   return {
     features: buildResolvedFeatures(shopMap, templateEntries),
