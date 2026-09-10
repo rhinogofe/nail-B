@@ -129,8 +129,8 @@ router.patch('/shops/:slug/line-push-enabled', async (req, res) => {
     return res.status(403).json({ error: 'เฉพาะแอดมินหลัก (default) เท่านั้น' })
   }
   const slug = String(req.params.slug || '').trim().toLowerCase()
-  if (!slug || slug === 'default') {
-    return res.status(400).json({ error: 'ไม่สามารถตั้งค่าแจ้งเตือนสำหรับ default ได้' })
+  if (!slug) {
+    return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
   }
   if (typeof req.body?.enabled !== 'boolean') {
     return res.status(400).json({ error: 'ต้องระบุ enabled (true/false)' })
