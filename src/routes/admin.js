@@ -6,7 +6,7 @@ const shopAdminAccess = require('../middleware/shopAdminAccessMiddleware')
 const resolveShop = require('../middleware/resolveShop')
 const { getPool, withTransaction } = require('../db/pool')
 const { getShopSetting, getShopSettings, setShopSetting, setShopSettings } = require('../utils/shopSettings')
-const { computeBookUntilDate, getAdvanceSettings, todayYmdBangkok } = require('../utils/bookingWindow')
+const { getAdvanceSettings, setAdvanceSettings } = require('../utils/bookingWindow')
 const {
   syncBookingOptions,
   validateOptionIds,
@@ -1840,6 +1840,7 @@ router.get('/settings/advance-days', async (req, res) => {
     res.json({
       advance_days: settings.advanceDays,
       book_until_date: settings.bookUntilDate,
+      extend_enabled: settings.extendEnabled !== false,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1847,19 +1848,31 @@ router.get('/settings/advance-days', async (req, res) => {
 })
 
 router.patch('/settings/advance-days', async (req, res) => {
-  const days = Number(req.body?.advance_days)
-  if (!Number.isInteger(days) || days < 1 || days > 365)
-    return res.status(400).json({ error: 'advance_days ต้องอยู่ระหว่าง 1-365' })
   try {
     const pool = getPool()
-    const bookUntil = computeBookUntilDate(days, todayYmdBangkok())
-    await setShopSettings(pool, req.shop.id, {
-      book_advance_days: String(days),
-      book_until_date: bookUntil,
-    })
+    const hasDays = Object.prototype.hasOwnProperty.call(req.body || {}, 'advance_days')
+    const hasExtend = Object.prototype.hasOwnProperty.call(req.body || {}, 'extend_enabled')
+
+    if (!hasDays && !hasExtend) {
+      return res.status(400).json({ error: 'ไม่มีข้อมูลให้บันทึก' })
+    }
+
+    const payload = {}
+    if (hasDays) payload.advanceDays = Number(req.body.advance_days)
+    if (hasExtend) {
+      payload.extendEnabled = req.body.extend_enabled !== false && req.body.extend_enabled !== 'false'
+    }
+
+    const settings = await setAdvanceSettings(pool, req.shop.id, payload)
     emitShopLive(req.shop.id, 'schedule')
-    res.json({ success: true, advance_days: days, book_until_date: bookUntil })
+    res.json({
+      success: true,
+      advance_days: settings.advanceDays,
+      book_until_date: settings.bookUntilDate,
+      extend_enabled: settings.extendEnabled !== false,
+    })
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })

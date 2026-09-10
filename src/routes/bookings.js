@@ -191,6 +191,7 @@ router.get('/advance-days', auth, async (req, res) => {
     res.json({
       advance_days: settings.advanceDays,
       book_until_date: settings.bookUntilDate,
+      extend_enabled: settings.extendEnabled !== false,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })

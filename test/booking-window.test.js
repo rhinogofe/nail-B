@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const {
   addDaysToYmd,
   computeBookUntilDate,
+  parseExtendEnabled,
   validateBookingDateRange,
 } = require('../src/utils/bookingWindow')
 
@@ -36,4 +37,12 @@ test('validateBookingDateRange rejects beyond book until', () => {
 
 test('validateBookingDateRange accepts in-range date', () => {
   assert.equal(validateBookingDateRange('2026-05-15', '2026-05-31', '2026-05-01'), null)
+})
+
+test('parseExtendEnabled defaults to on', () => {
+  assert.equal(parseExtendEnabled(null), true)
+  assert.equal(parseExtendEnabled(''), true)
+  assert.equal(parseExtendEnabled('true'), true)
+  assert.equal(parseExtendEnabled('false'), false)
+  assert.equal(parseExtendEnabled('0'), false)
 })

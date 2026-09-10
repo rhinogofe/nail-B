@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   shop_open_hour: '9',
   shop_last_booking_hour: '18',
   book_advance_days: '30',
+  book_advance_extend_enabled: 'true',
   booking_display_mode: 'slots_2h',
   unpaid_auto_cancel_enabled: 'true',
   unpaid_expire_hours: '24',
