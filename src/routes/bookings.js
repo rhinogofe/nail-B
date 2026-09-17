@@ -533,14 +533,16 @@ router.get('/my', auth, async (req, res) => {
           b.id,
           b.booking_date,
           b.start_hour,
+          b.start_minute,
           b.end_hour,
+          b.end_minute,
           b.status,
           b.created_at,
           b.completed_at,
           b.total
         FROM bookings b
         WHERE b.shop_id = $1 AND b.user_id = $2
-        ORDER BY b.booking_date DESC, b.start_hour DESC
+        ORDER BY b.booking_date DESC, b.start_hour DESC, b.start_minute DESC
       `,
       [req.shop.id, req.user.id]
     )
@@ -586,7 +588,7 @@ router.get('/:id/payment-info', auth, async (req, res) => {
 
     const result = await pool.query(
       `
-        SELECT id, booking_date, start_hour, end_hour, status, created_at
+        SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status, created_at
         FROM bookings
         WHERE id = $1 AND shop_id = $2 AND user_id = $3
       `,
