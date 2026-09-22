@@ -506,6 +506,7 @@ async function ensureSchema() {
     FROM shops s
     CROSS JOIN (VALUES
       ('deposit_amount', '300'),
+      ('deposit_full_payment_enabled', 'false'),
       ('shop_open_hour', '9'),
       ('shop_last_booking_hour', '18'),
       ('book_advance_days', '30'),
@@ -516,6 +517,7 @@ async function ensureSchema() {
       ('coupon_discount_percent', '20'),
       ('coupon_required_points', '100'),
       ('coupon_completion_points', '10'),
+      ('coupon_manual_completion_points', 'false'),
       ('line_push_enabled', 'false'),
       ('booking_slot_hours', '2'),
       ('extend_booking_by_services', 'false'),

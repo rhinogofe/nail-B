@@ -4,11 +4,17 @@ const DEFAULT_DISCOUNT = 20
 const DEFAULT_REQUIRED_POINTS = 100
 const DEFAULT_COMPLETION_POINTS = 10
 
+function parseManualCompletionPoints(value) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
 async function getCouponSettings(poolOrClient, shopId) {
   const map = await getShopSettings(poolOrClient, shopId, [
     'coupon_discount_percent',
     'coupon_required_points',
     'coupon_completion_points',
+    'coupon_manual_completion_points',
   ])
   let discountPercent = Number(map.coupon_discount_percent)
   let requiredPoints = Number(map.coupon_required_points)
@@ -22,10 +28,16 @@ async function getCouponSettings(poolOrClient, shopId) {
   if (!Number.isInteger(completionPoints) || completionPoints < 0) {
     completionPoints = DEFAULT_COMPLETION_POINTS
   }
-  return { discountPercent, requiredPoints, completionPoints }
+  const manualCompletionPoints = parseManualCompletionPoints(map.coupon_manual_completion_points)
+  return { discountPercent, requiredPoints, completionPoints, manualCompletionPoints }
 }
 
-async function setCouponSettings(poolOrClient, shopId, { discountPercent, requiredPoints, completionPoints }) {
+async function setCouponSettings(poolOrClient, shopId, {
+  discountPercent,
+  requiredPoints,
+  completionPoints,
+  manualCompletionPoints,
+}) {
   const payload = {
     coupon_discount_percent: discountPercent,
     coupon_required_points: requiredPoints,
@@ -33,22 +45,33 @@ async function setCouponSettings(poolOrClient, shopId, { discountPercent, requir
   if (completionPoints != null) {
     payload.coupon_completion_points = completionPoints
   }
+  if (manualCompletionPoints != null) {
+    payload.coupon_manual_completion_points = manualCompletionPoints ? 'true' : 'false'
+  }
   await setShopSettings(poolOrClient, shopId, payload)
   return getCouponSettings(poolOrClient, shopId)
 }
 
-async function awardCompletionPoints(client, shopId, userId, bookingId) {
-  const { completionPoints } = await getCouponSettings(client, shopId)
-  if (completionPoints <= 0) return 0
+async function awardCompletionPoints(client, shopId, userId, bookingId, completionPointsOverride = undefined) {
+  const settings = await getCouponSettings(client, shopId)
+  let points
+  if (settings.manualCompletionPoints) {
+    const override = Number(completionPointsOverride)
+    if (!Number.isInteger(override) || override < 0) return 0
+    points = override
+  } else {
+    points = settings.completionPoints
+  }
+  if (points <= 0) return 0
   await client.query(
     `INSERT INTO point_logs (user_id, booking_id, points) VALUES ($1, $2, $3)`,
-    [userId, bookingId, completionPoints]
+    [userId, bookingId, points]
   )
   await client.query(
     `UPDATE users SET total_points = total_points + $1 WHERE id = $2`,
-    [completionPoints, userId]
+    [points, userId]
   )
-  return completionPoints
+  return points
 }
 
 module.exports = {

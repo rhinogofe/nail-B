@@ -5,6 +5,7 @@ const { computeBookUntilDate, todayYmdBangkok } = require('./bookingWindow')
 
 const DEFAULT_SETTINGS = {
   deposit_amount: '300',
+  deposit_full_payment_enabled: 'false',
   shop_open_hour: '9',
   shop_last_booking_hour: '18',
   book_advance_days: '30',
@@ -21,6 +22,7 @@ const DEFAULT_SETTINGS = {
   coupon_discount_percent: '20',
   coupon_required_points: '100',
   coupon_completion_points: '10',
+  coupon_manual_completion_points: 'false',
 }
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/

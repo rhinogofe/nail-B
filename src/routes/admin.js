@@ -637,7 +637,23 @@ router.post('/bookings', async (req, res) => {
 
       let awardedPoints = 0
       if (status === 'done') {
-        awardedPoints = await awardCompletionPoints(client, shopId, user_id, bookingId)
+        const couponSettings = await getCouponSettings(client, shopId)
+        let completionOverride = undefined
+        if (couponSettings.manualCompletionPoints) {
+          if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'completion_points')) {
+            const err = new Error('กรุณาระบุแต้มที่ให้ลูกค้า')
+            err.status = 400
+            throw err
+          }
+          const manualPoints = Number(req.body.completion_points)
+          if (!Number.isInteger(manualPoints) || manualPoints < 0) {
+            const err = new Error('แต้มต้องเป็นจำนวนเต็มที่ไม่ติดลบ')
+            err.status = 400
+            throw err
+          }
+          completionOverride = manualPoints
+        }
+        awardedPoints = await awardCompletionPoints(client, shopId, user_id, bookingId, completionOverride)
       }
 
       return { booking: await fetchAdminBookingWithOptions(client, shopId, bookingId), awardedPoints }
@@ -1431,24 +1447,47 @@ router.delete('/day-hours/:id', async (req, res) => {
 router.get('/settings/deposit', async (req, res) => {
   try {
     const pool = getPool()
-    const value = await getShopSetting(pool, req.shop.id, 'deposit_amount')
-    res.json({ deposit_amount: Number(value) || 300 })
+    const { getDepositSettings } = require('../utils/depositSettings')
+    const settings = await getDepositSettings(pool, req.shop.id)
+    res.json({
+      deposit_amount: settings.depositAmount,
+      full_payment_enabled: settings.fullPaymentEnabled,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
 router.patch('/settings/deposit', async (req, res) => {
-  const amount = Number(req.body?.deposit_amount)
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'deposit_amount ต้องมากกว่า 0' })
+  const hasAmount = Object.prototype.hasOwnProperty.call(req.body || {}, 'deposit_amount')
+  const hasFullPayment = Object.prototype.hasOwnProperty.call(req.body || {}, 'full_payment_enabled')
+  if (!hasAmount && !hasFullPayment) {
+    return res.status(400).json({ error: 'ต้องระบุ deposit_amount หรือ full_payment_enabled' })
   }
+
+  let depositAmount
+  if (hasAmount) {
+    depositAmount = Number(req.body.deposit_amount)
+    if (!Number.isFinite(depositAmount) || depositAmount <= 0) {
+      return res.status(400).json({ error: 'deposit_amount ต้องมากกว่า 0' })
+    }
+  }
+
+  const fullPaymentEnabled = hasFullPayment ? Boolean(req.body.full_payment_enabled) : undefined
 
   try {
     const pool = getPool()
-    await setShopSetting(pool, req.shop.id, 'deposit_amount', amount)
+    const { setDepositSettings } = require('../utils/depositSettings')
+    const settings = await setDepositSettings(pool, req.shop.id, {
+      depositAmount,
+      fullPaymentEnabled,
+    })
     emitShopLive(req.shop.id, 'settings')
-    res.json({ success: true, deposit_amount: amount })
+    res.json({
+      success: true,
+      deposit_amount: settings.depositAmount,
+      full_payment_enabled: settings.fullPaymentEnabled,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -1462,6 +1501,7 @@ router.get('/settings/coupon', async (req, res) => {
       discount_percent: settings.discountPercent,
       required_points: settings.requiredPoints,
       completion_points: settings.completionPoints,
+      manual_completion_points: settings.manualCompletionPoints,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1472,6 +1512,8 @@ router.patch('/settings/coupon', async (req, res) => {
   const discountPercent = Number(req.body?.discount_percent)
   const requiredPoints = Number(req.body?.required_points)
   const completionPoints = Number(req.body?.completion_points)
+  const hasManual = Object.prototype.hasOwnProperty.call(req.body || {}, 'manual_completion_points')
+  const manualCompletionPoints = hasManual ? Boolean(req.body.manual_completion_points) : undefined
   if (!Number.isInteger(discountPercent) || discountPercent < 1 || discountPercent > 100) {
     return res.status(400).json({ error: 'discount_percent ต้องอยู่ระหว่าง 1-100' })
   }
@@ -1487,6 +1529,7 @@ router.patch('/settings/coupon', async (req, res) => {
       discountPercent,
       requiredPoints,
       completionPoints,
+      manualCompletionPoints,
     })
     emitShopLive(req.shop.id, 'settings')
     res.json({
@@ -1494,6 +1537,7 @@ router.patch('/settings/coupon', async (req, res) => {
       discount_percent: settings.discountPercent,
       required_points: settings.requiredPoints,
       completion_points: settings.completionPoints,
+      manual_completion_points: settings.manualCompletionPoints,
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -2216,6 +2260,20 @@ router.patch('/bookings/:id/complete', async (req, res) => {
 
   try {
     const shopId = req.shop.id
+    const pool = getPool()
+    const couponSettings = await getCouponSettings(pool, shopId)
+    let completionOverride = undefined
+    if (couponSettings.manualCompletionPoints) {
+      if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'completion_points')) {
+        return res.status(400).json({ error: 'กรุณาระบุแต้มที่ให้ลูกค้า' })
+      }
+      const manualPoints = Number(req.body.completion_points)
+      if (!Number.isInteger(manualPoints) || manualPoints < 0) {
+        return res.status(400).json({ error: 'แต้มต้องเป็นจำนวนเต็มที่ไม่ติดลบ' })
+      }
+      completionOverride = manualPoints
+    }
+
     let completedDate = null
     const awardedPoints = await withTransaction(async (client) => {
       const found = await client.query(
@@ -2235,7 +2293,7 @@ router.patch('/bookings/:id/complete', async (req, res) => {
         [row.id, shopId, total]
       )
 
-      return awardCompletionPoints(client, shopId, row.user_id, row.id)
+      return awardCompletionPoints(client, shopId, row.user_id, row.id, completionOverride)
     })
 
     const msg =
@@ -2492,12 +2550,20 @@ router.get('/users', async (req, res) => {
     const pool = getPool()
     const shopId = req.shop.id
     const showAllUsers = req.shop.slug === 'default'
+    const bookedScope = String(req.query.booked_scope || 'all').trim()
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200)
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
     const q = String(req.query.q || '').trim()
 
     const params = [shopId]
     const filters = []
+
+    if (showAllUsers && bookedScope === 'default_shop' && req.isSuperAdmin) {
+      filters.push(`EXISTS (
+        SELECT 1 FROM bookings b_default_scope
+        WHERE b_default_scope.user_id = u.id AND b_default_scope.shop_id = $1
+      )`)
+    }
 
     if (!showAllUsers) {
       filters.push(`(

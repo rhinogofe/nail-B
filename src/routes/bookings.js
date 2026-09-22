@@ -212,8 +212,12 @@ router.get('/booking-display', auth, async (req, res) => {
 router.get('/deposit-setting', auth, async (req, res) => {
   try {
     const pool = getPool()
-    const value = await getShopSetting(pool, req.shop.id, 'deposit_amount')
-    res.json({ deposit_amount: Number(value) || 300 })
+    const { getDepositSettings } = require('../utils/depositSettings')
+    const settings = await getDepositSettings(pool, req.shop.id)
+    res.json({
+      deposit_amount: settings.depositAmount,
+      full_payment_enabled: settings.fullPaymentEnabled,
+    })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -636,10 +640,16 @@ router.get('/:id/payment-info', auth, async (req, res) => {
       })
     }
 
+    const { resolveBookingPaymentAmount } = require('../utils/depositSettings')
+    const payment = await resolveBookingPaymentAmount(pool, req.shop.id, booking.id)
+
     res.json({
       booking,
       location_name: locationRow?.name || null,
       location_map_url: locationMapUrl || null,
+      payment_amount: payment.paymentAmount,
+      full_payment_enabled: payment.fullPaymentEnabled,
+      service_total: payment.serviceTotal,
       unpaid_expire: {
         enabled: settings.enabled,
         expire_hours: settings.expireHours,
