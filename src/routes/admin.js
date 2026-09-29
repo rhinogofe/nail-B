@@ -265,7 +265,9 @@ async function fetchAdminBookingWithOptions(client, shopId, bookingId) {
         b.total,
         u.id AS user_id,
         u.name AS user_name,
-        u.email AS user_email
+        u.email AS user_email,
+        CASE WHEN u.provider = 'phone' THEN u.provider_id ELSE NULL END AS user_phone,
+        NULLIF(BTRIM(u.gmail), '') AS user_gmail
       FROM bookings b
       JOIN users u ON u.id = b.user_id
       WHERE b.id = $1 AND b.shop_id = $2
@@ -341,6 +343,8 @@ router.get('/bookings', async (req, res) => {
           u.id         AS user_id,
           u.name       AS user_name,
           u.email      AS user_email,
+          CASE WHEN u.provider = 'phone' THEN u.provider_id ELSE NULL END AS user_phone,
+          NULLIF(BTRIM(u.gmail), '') AS user_gmail,
           u.avatar_url AS user_avatar,
           u.total_points
         FROM bookings b

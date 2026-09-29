@@ -49,6 +49,13 @@ function pickShopSlug(req) {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ? slug : 'default'
 }
 
+function normalizeGmail(value) {
+  const email = String(value || '').trim().toLowerCase()
+  if (!email) return ''
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null
+  return email
+}
+
 function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
 }
@@ -297,6 +304,7 @@ router.get('/me', auth, async (req, res) => {
           u.id,
           u.name,
           u.email,
+          u.gmail,
           u.avatar_url,
           u.provider,
           u.provider_id,
@@ -310,7 +318,7 @@ router.get('/me', auth, async (req, res) => {
         FROM users u
         LEFT JOIN bookings b ON b.user_id = u.id
         WHERE u.id = $1
-        GROUP BY u.id, u.name, u.email, u.avatar_url, u.provider, u.provider_id, u.is_admin, u.receive_all_shop_push, u.total_points, u.created_at
+        GROUP BY u.id, u.name, u.email, u.gmail, u.avatar_url, u.provider, u.provider_id, u.is_admin, u.receive_all_shop_push, u.total_points, u.created_at
       `,
       [req.user.id]
     )
@@ -337,7 +345,7 @@ router.get('/me', auth, async (req, res) => {
 
 router.patch('/profile', auth, async (req, res) => {
   const has = (key) => Object.prototype.hasOwnProperty.call(req.body, key)
-  if (!has('name') && !has('phone')) {
+  if (!has('name') && !has('phone') && !has('gmail')) {
     return res.status(400).json({ error: 'ไม่มีข้อมูลให้แก้ไข' })
   }
 
@@ -359,6 +367,13 @@ router.patch('/profile', auth, async (req, res) => {
       if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อ' })
       params.push(name)
       fields.push(`name = $${params.length}`)
+    }
+
+    if (has('gmail')) {
+      const gmail = normalizeGmail(req.body.gmail)
+      if (gmail == null) return res.status(400).json({ error: 'รูปแบบ Gmail ไม่ถูกต้อง' })
+      params.push(gmail || null)
+      fields.push(`gmail = $${params.length}`)
     }
 
     if (has('phone')) {
@@ -399,7 +414,7 @@ router.patch('/profile', auth, async (req, res) => {
         UPDATE users
         SET ${fields.join(', ')}
         WHERE id = $${params.length}
-        RETURNING id, name, email, avatar_url, provider, provider_id, is_admin, total_points, created_at
+        RETURNING id, name, email, gmail, avatar_url, provider, provider_id, is_admin, total_points, created_at
       `,
       params
     )
