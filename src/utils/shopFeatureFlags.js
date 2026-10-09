@@ -143,6 +143,11 @@ async function applyDefaultFeaturesToNewShop(poolOrClient, shopId) {
   await ensureShopSettings(poolOrClient, shopId, entries)
 }
 
+async function isShopFeatureOn(poolOrClient, shopId, key) {
+  const { features } = await getShopFeatureFlags(poolOrClient, shopId)
+  return isFeatureEnabled(features, key)
+}
+
 function isFeatureEnabled(features, key) {
   if (!features || typeof features !== 'object') return catalogDefaultEnabled(key)
   if (features[key] === false) return false
@@ -161,4 +166,5 @@ module.exports = {
   setNewShopDefaultTemplate,
   applyDefaultFeaturesToNewShop,
   isFeatureEnabled,
+  isShopFeatureOn,
 }

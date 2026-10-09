@@ -30,6 +30,7 @@ const {
   computeDayHourCascadeUpdates,
 } = require('../utils/bookingDayHours')
 const { listDayClosuresForMonth, setDayClosure, getDayClosureStatus } = require('../utils/bookingDayClosures')
+const { isShopFeatureOn } = require('../utils/shopFeatureFlags')
 const {
   getBookingSlotHours,
   bookingEndHour,
@@ -594,12 +595,13 @@ router.post('/bookings', async (req, res) => {
     const pool = getPool()
     const shopId = req.shop.id
 
+    const staffFeatureOn = await isShopFeatureOn(pool, shopId, 'feat_staff')
     const activeStaff = await pool.query(
       `SELECT COUNT(*)::int AS n FROM staff WHERE shop_id = $1 AND is_active = true`,
       [shopId]
     )
     let resolvedStaffId = null
-    if (activeStaff.rows[0].n > 0) {
+    if (staffFeatureOn && activeStaff.rows[0].n > 0) {
       if (!staff_id) return res.status(400).json({ error: 'กรุณาเลือกช่าง' })
       const staffRow = await pool.query(
         `SELECT id FROM staff WHERE id = $1 AND shop_id = $2 AND is_active = true LIMIT 1`,

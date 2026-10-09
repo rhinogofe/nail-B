@@ -17,7 +17,7 @@ const { getDayClosureStatus } = require('../utils/bookingDayClosures')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
-const { getShopFeatureFlags } = require('../utils/shopFeatureFlags')
+const { getShopFeatureFlags, isShopFeatureOn } = require('../utils/shopFeatureFlags')
 const { resolveShopMapEmbedUrlDetailed } = require('../utils/googleMapEmbed')
 const { readUiImageFile, MIME_EXT, isAllowedKind } = require('../utils/shopUiImages')
 const { getShopSetting } = require('../utils/shopSettings')
@@ -242,6 +242,9 @@ router.get('/staff', auth, async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    if (!(await isShopFeatureOn(pool, shopId, 'feat_staff'))) {
+      return res.json([])
+    }
     const staffRes = await pool.query(
       `SELECT id, name FROM staff WHERE shop_id = $1 AND is_active = true ORDER BY sort_order ASC, created_at ASC`,
       [shopId]
@@ -467,9 +470,10 @@ router.post('/', auth, async (req, res) => {
     const dateError = validateBookingDateRange(booking_date, bookUntilDate)
     if (dateError) return res.status(400).json({ error: dateError })
 
-    // ตรวจ staff_id ถ้าร้านมีช่าง
+    const staffFeatureOn = await isShopFeatureOn(pool, shopId, 'feat_staff')
+    // ตรวจ staff_id ถ้าร้านมีช่าง และเปิดใช้ฟังก์ชันช่าง
     let resolvedStaffId = null
-    if (staff_id) {
+    if (staffFeatureOn && staff_id) {
       const staffRow = await pool.query(
         `SELECT id FROM staff WHERE id = $1 AND shop_id = $2 AND is_active = true LIMIT 1`,
         [staff_id, shopId]
@@ -501,7 +505,7 @@ router.post('/', auth, async (req, res) => {
     if (finalized.error) return res.status(400).json({ error: finalized.error })
     const slot = finalized.slot
 
-    // Overlap check: ถ้ามีช่าง → เช็คต่อช่าง / ถ้าไม่มีช่าง → เช็คร้านทั้งหมด (เหมือนเดิม)
+    // เปิดช่าง: ล็อกต่อช่าง / ปิดช่าง: ล็อกทั้งร้านรวมคิวเดิมของช่าง / ไม่มีช่าง: ล็อกเฉพาะคิวที่ไม่ได้ผูกช่าง
     const overlapQuery = resolvedStaffId
       ? await pool.query(
           `SELECT id, start_hour, start_minute, end_hour, end_minute
@@ -513,7 +517,7 @@ router.post('/', auth, async (req, res) => {
           `SELECT id, start_hour, start_minute, end_hour, end_minute
            FROM bookings
            WHERE shop_id = $1 AND booking_date = $2 AND status != 'cancelled'
-             AND (staff_id IS NULL)`,
+             ${staffFeatureOn ? 'AND staff_id IS NULL' : ''}`,
           [shopId, booking_date]
         )
 
