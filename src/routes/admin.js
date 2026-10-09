@@ -322,6 +322,7 @@ router.get('/bookings', async (req, res) => {
   try {
     const pool = getPool()
     await expireUnpaidBookings(pool, shopId)
+    const staffId = await resolveDayHoursStaffId(pool, shopId, req.query.staff_id)
     const params = [shopId]
     let where = 'WHERE b.shop_id = $1'
 
@@ -332,6 +333,10 @@ router.get('/bookings', async (req, res) => {
     if (status) {
       params.push(status)
       where += ` AND b.status = $${params.length}`
+    }
+    if (staffId) {
+      params.push(staffId)
+      where += ` AND b.staff_id = $${params.length}`
     }
 
     const result = await pool.query(
@@ -394,7 +399,7 @@ router.get('/bookings', async (req, res) => {
 
     res.json(payload)
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(err.status || 500).json({ error: err.message })
   }
 })
 
@@ -412,6 +417,14 @@ router.get('/bookings/calendar-summary', async (req, res) => {
     const lastDay = new Date(y, m, 0).getDate()
     const to = `${month}-${String(lastDay).padStart(2, '0')}`
 
+    const staffId = await resolveDayHoursStaffId(pool, shopId, req.query.staff_id)
+    const params = [shopId, from, to]
+    let staffClause = ''
+    if (staffId) {
+      params.push(staffId)
+      staffClause = ` AND staff_id = $${params.length}`
+    }
+
     const result = await pool.query(
       `
         SELECT
@@ -420,11 +433,11 @@ router.get('/bookings/calendar-summary', async (req, res) => {
           COUNT(*) FILTER (WHERE status IN ('pending', 'done'))::int AS paid_count,
           COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
         FROM bookings
-        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3
+        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3${staffClause}
         GROUP BY booking_date
         ORDER BY date ASC
       `,
-      [shopId, from, to]
+      params
     )
 
     const days = result.rows.map((row) => ({
@@ -446,7 +459,7 @@ router.get('/bookings/calendar-summary', async (req, res) => {
       month_cancelled_count,
     })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(err.status || 500).json({ error: err.message })
   }
 })
 
@@ -471,6 +484,15 @@ router.get('/revenue/summary', async (req, res) => {
     const prevTo = `${prevMonth}-${String(prevLastDay).padStart(2, '0')}`
 
     const depositRate = Number(await getShopSetting(pool, shopId, 'deposit_amount')) || 300
+    const staffId = await resolveDayHoursStaffId(pool, shopId, req.query.staff_id)
+    const monthParams = [shopId, from, to]
+    const prevParams = [shopId, prevFrom, prevTo]
+    let staffClause = ''
+    if (staffId) {
+      monthParams.push(staffId)
+      prevParams.push(staffId)
+      staffClause = ` AND staff_id = $${monthParams.length}`
+    }
 
     const result = await pool.query(
       `
@@ -479,11 +501,11 @@ router.get('/revenue/summary', async (req, res) => {
           COUNT(*) FILTER (WHERE status = 'done')::int AS done_count,
           COALESCE(SUM(total) FILTER (WHERE status = 'done' AND total IS NOT NULL), 0)::numeric AS total_amount
         FROM bookings
-        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3
+        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3${staffClause}
         GROUP BY booking_date
         ORDER BY date ASC
       `,
-      [shopId, from, to]
+      monthParams
     )
 
     const prevResult = await pool.query(
@@ -492,9 +514,9 @@ router.get('/revenue/summary', async (req, res) => {
           COUNT(*) FILTER (WHERE status = 'done')::int AS done_count,
           COALESCE(SUM(total) FILTER (WHERE status = 'done' AND total IS NOT NULL), 0)::numeric AS total_amount
         FROM bookings
-        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3
+        WHERE shop_id = $1 AND booking_date BETWEEN $2 AND $3${staffClause}
       `,
-      [shopId, prevFrom, prevTo]
+      prevParams
     )
 
     const days = result.rows.map((row) => {
@@ -536,7 +558,7 @@ router.get('/revenue/summary', async (req, res) => {
       total_change_pct: pctChange(month_total, prev_month_total),
     })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(err.status || 500).json({ error: err.message })
   }
 })
 
