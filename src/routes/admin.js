@@ -174,12 +174,17 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/[^\d+]/g, '').trim()
 }
 
-async function assertSlotAvailable(client, shopId, bookingDate, slot, excludeId = null) {
+async function assertSlotAvailable(client, shopId, bookingDate, slot, excludeId = null, staffId = null) {
   const params = [shopId, bookingDate]
   let excludeClause = ''
   if (excludeId) {
     params.push(excludeId)
     excludeClause = `AND id != $${params.length}`
+  }
+  let staffClause = ''
+  if (staffId) {
+    params.push(staffId)
+    staffClause = `AND staff_id = $${params.length}`
   }
   const overlap = await client.query(
     `
@@ -189,6 +194,7 @@ async function assertSlotAvailable(client, shopId, bookingDate, slot, excludeId 
         AND booking_date = $2
         AND status != 'cancelled'
         ${excludeClause}
+        ${staffClause}
     `,
     params
   )
@@ -346,9 +352,12 @@ router.get('/bookings', async (req, res) => {
           CASE WHEN u.provider = 'phone' THEN u.provider_id ELSE NULL END AS user_phone,
           NULLIF(BTRIM(u.gmail), '') AS user_gmail,
           u.avatar_url AS user_avatar,
-          u.total_points
+          u.total_points,
+          st.id        AS staff_id,
+          st.name      AS staff_name
         FROM bookings b
         JOIN users u ON u.id = b.user_id
+        LEFT JOIN staff st ON st.id = b.staff_id
         ${where}
         ORDER BY b.booking_date ASC, b.start_hour ASC
       `,
@@ -531,7 +540,7 @@ router.get('/revenue/summary', async (req, res) => {
 })
 
 router.post('/bookings', async (req, res) => {
-  const { user_id, booking_date, start_hour, nailoption_ids, status: reqStatus, total } = req.body
+  const { user_id, booking_date, start_hour, nailoption_ids, status: reqStatus, total, staff_id } = req.body
   if (!user_id || !booking_date || start_hour == null) {
     return res.status(400).json({ error: 'ต้องระบุ user_id, booking_date และ start_hour' })
   }
@@ -561,8 +570,26 @@ router.post('/bookings', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+
+    const activeStaff = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM staff WHERE shop_id = $1 AND is_active = true`,
+      [shopId]
+    )
+    let resolvedStaffId = null
+    if (activeStaff.rows[0].n > 0) {
+      if (!staff_id) return res.status(400).json({ error: 'กรุณาเลือกช่าง' })
+      const staffRow = await pool.query(
+        `SELECT id FROM staff WHERE id = $1 AND shop_id = $2 AND is_active = true LIMIT 1`,
+        [staff_id, shopId]
+      )
+      if (!staffRow.rows.length) return res.status(400).json({ error: 'ไม่พบช่างหรือช่างปิดรับคิว' })
+      resolvedStaffId = staffRow.rows[0].id
+    }
+
     const slotHours = await getBookingSlotHours(pool, shopId)
-    const slotError = await validateBookingSlot(pool, shopId, booking_date, req.body, slotHours)
+    const slotError = await validateBookingSlot(
+      pool, shopId, booking_date, req.body, slotHours, null, resolvedStaffId
+    )
     if (slotError) {
       return res.status(400).json({ error: slotError })
     }
@@ -598,7 +625,9 @@ router.post('/bookings', async (req, res) => {
         shopId,
         booking_date,
         req.body,
-        optionIds
+        optionIds,
+        null,
+        resolvedStaffId
       )
       if (finalized.error) {
         const err = new Error(finalized.error)
@@ -607,7 +636,7 @@ router.post('/bookings', async (req, res) => {
       }
       const slot = finalized.slot
       await assertSlotNotBlocked(client, shopId, booking_date, slot)
-      await assertSlotAvailable(client, shopId, booking_date, slot)
+      await assertSlotAvailable(client, shopId, booking_date, slot, null, resolvedStaffId)
 
       const completedAt = status === 'done' ? new Date() : null
       const bookingTotal = totalProvided ? totalNum : null
@@ -617,9 +646,9 @@ router.post('/bookings', async (req, res) => {
           INSERT INTO bookings (
             shop_id, user_id, booking_date,
             start_hour, start_minute, end_hour, end_minute,
-            status, total, completed_at
+            status, total, completed_at, staff_id
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
           RETURNING id
         `,
         [
@@ -633,6 +662,7 @@ router.post('/bookings', async (req, res) => {
           status,
           bookingTotal,
           completedAt,
+          resolvedStaffId,
         ]
       )
       const bookingId = inserted.rows[0].id
@@ -4295,6 +4325,130 @@ router.patch('/settings/booking-slip-retention', async (req, res) => {
     const { setBookingSlipRetentionDays } = require('../utils/bookingPaymentSlipSettings')
     const retention_days = await setBookingSlipRetentionDays(pool, req.shop.id, req.body?.retention_days)
     res.json({ success: true, retention_days })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Staff (ช่าง) ────────────────────────────────────────────────────────────
+
+async function getStaffList(pool, shopId) {
+  const staffRes = await pool.query(
+    `SELECT id, name, is_active, sort_order FROM staff WHERE shop_id = $1 ORDER BY sort_order ASC, created_at ASC`,
+    [shopId]
+  )
+  const staffIds = staffRes.rows.map((s) => s.id)
+  let optionsByStaff = {}
+  if (staffIds.length) {
+    const optRes = await pool.query(
+      `SELECT sn.staff_id, n.id AS nailoption_id, n.option_name
+       FROM staff_nailoptions sn
+       JOIN nailoption n ON n.id = sn.nailoption_id
+       WHERE sn.staff_id = ANY($1::uuid[])
+       ORDER BY n.sort_order ASC, n.option_name ASC`,
+      [staffIds]
+    )
+    for (const row of optRes.rows) {
+      if (!optionsByStaff[row.staff_id]) optionsByStaff[row.staff_id] = []
+      optionsByStaff[row.staff_id].push({ id: row.nailoption_id, option_name: row.option_name })
+    }
+  }
+  return staffRes.rows.map((s) => ({ ...s, nailoptions: optionsByStaff[s.id] || [] }))
+}
+
+router.get('/staff', async (req, res) => {
+  try {
+    const pool = getPool()
+    res.json(await getStaffList(pool, req.shop.id))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/staff', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const name = String(req.body?.name || '').trim()
+    if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อช่าง' })
+    const nailoptionIds = Array.isArray(req.body?.nailoption_ids) ? req.body.nailoption_ids.map(String) : []
+
+    const maxOrder = await pool.query(
+      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM staff WHERE shop_id = $1`, [shopId]
+    )
+    const result = await pool.query(
+      `INSERT INTO staff (shop_id, name, is_active, sort_order) VALUES ($1, $2, true, $3) RETURNING id, name, is_active, sort_order`,
+      [shopId, name, maxOrder.rows[0].next]
+    )
+    const staffId = result.rows[0].id
+    if (nailoptionIds.length) {
+      await pool.query(
+        `INSERT INTO staff_nailoptions (staff_id, nailoption_id) SELECT $1, UNNEST($2::uuid[]) ON CONFLICT DO NOTHING`,
+        [staffId, nailoptionIds]
+      )
+    }
+    res.status(201).json({ success: true, staff: (await getStaffList(pool, shopId)).find((s) => s.id === staffId) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.patch('/staff/:id', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const staffId = req.params.id
+    const has = (k) => Object.prototype.hasOwnProperty.call(req.body || {}, k)
+
+    const fields = []
+    const params = []
+    if (has('name')) {
+      const name = String(req.body.name || '').trim()
+      if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อช่าง' })
+      params.push(name); fields.push(`name = $${params.length}`)
+    }
+    if (has('is_active')) {
+      params.push(Boolean(req.body.is_active)); fields.push(`is_active = $${params.length}`)
+    }
+    if (fields.length) {
+      params.push(new Date()); fields.push(`updated_at = $${params.length}`)
+      params.push(staffId); params.push(shopId)
+      await pool.query(
+        `UPDATE staff SET ${fields.join(', ')} WHERE id = $${params.length - 1} AND shop_id = $${params.length}`,
+        params
+      )
+    }
+    if (has('nailoption_ids')) {
+      const ids = Array.isArray(req.body.nailoption_ids) ? req.body.nailoption_ids.map(String) : []
+      await pool.query(`DELETE FROM staff_nailoptions WHERE staff_id = $1`, [staffId])
+      if (ids.length) {
+        await pool.query(
+          `INSERT INTO staff_nailoptions (staff_id, nailoption_id) SELECT $1, UNNEST($2::uuid[]) ON CONFLICT DO NOTHING`,
+          [staffId, ids]
+        )
+      }
+    }
+    const updated = (await getStaffList(pool, shopId)).find((s) => s.id === staffId)
+    res.json({ success: true, staff: updated })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.delete('/staff/:id', async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const staffId = req.params.id
+    const activeUse = await pool.query(
+      `SELECT 1 FROM bookings WHERE staff_id = $1 AND shop_id = $2 AND status IN ('awaiting_payment','pending') LIMIT 1`,
+      [staffId, shopId]
+    )
+    if (activeUse.rows.length) {
+      return res.status(409).json({ error: 'ช่างมีคิวที่ยังรอชำระหรือรอให้บริการ ให้ปิดการใช้งานแทนการลบ' })
+    }
+    await pool.query(`DELETE FROM staff WHERE id = $1 AND shop_id = $2`, [staffId, shopId])
+    res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

@@ -536,10 +536,17 @@ async function ensureSchema() {
 
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_date_hour`)
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_shop_date_hour`)
+  // ดัชนีเดิมล็อกเวลาทั้งร้าน — เปลี่ยนเป็นล็อกต่อช่าง เพื่อให้คนละช่างจองเวลาเดียวกันได้
+  await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_shop_date_slot`)
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_shop_date_slot
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_shop_staff_date_slot
+      ON bookings (shop_id, staff_id, booking_date, start_hour, start_minute)
+      WHERE status != 'cancelled' AND staff_id IS NOT NULL
+  `)
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_bookings_active_shop_date_slot_nostaff
       ON bookings (shop_id, booking_date, start_hour, start_minute)
-      WHERE status != 'cancelled'
+      WHERE status != 'cancelled' AND staff_id IS NULL
   `)
 
   await pool.query(`ALTER TABLE service_locations DROP CONSTRAINT IF EXISTS service_locations_name_key`)
@@ -639,6 +646,28 @@ async function ensureSchema() {
       [defaultShopId, bookUntil]
     )
   }
+
+  // ── Staff (ช่าง) ──────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS staff (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      sort_order INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS ix_staff_shop_id ON staff (shop_id);
+
+    CREATE TABLE IF NOT EXISTS staff_nailoptions (
+      staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+      nailoption_id UUID NOT NULL REFERENCES nailoption(id) ON DELETE CASCADE,
+      PRIMARY KEY (staff_id, nailoption_id)
+    );
+  `)
+
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS staff_id UUID REFERENCES staff(id) ON DELETE SET NULL`)
 
   const seed = await pool.query(`SELECT COUNT(*)::int AS n FROM nailoption WHERE shop_id = $1`, [defaultShopId])
   if (seed.rows[0].n === 0) {

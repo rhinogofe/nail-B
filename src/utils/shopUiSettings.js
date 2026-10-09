@@ -81,7 +81,7 @@ const UI_DEFAULTS = {
   ui_shop_picker_title: 'เลือกร้าน',
   ui_shop_picker_subtitle: 'เลือกสาขาที่ต้องการจองคิว',
 
-  ui_admin_add_staff_btn: 'เพิ่มช่าง',
+  ui_admin_add_staff_btn: 'เพิ่มแอดมิน',
 
   ui_color_primary: '#C4847A',
   ui_color_primary_dark: '#A66B62',

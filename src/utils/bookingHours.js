@@ -79,7 +79,8 @@ async function validateBookingSlot(
   bookingDate,
   body,
   slotHours = DEFAULT_SLOT_HOURS,
-  excludeBookingId = null
+  excludeBookingId = null,
+  staffId = null
 ) {
   const slot = normalizeSlotInput(body, slotHours)
   if (!slot) return 'ช่วงเวลาไม่ถูกต้อง'
@@ -100,7 +101,7 @@ async function validateBookingSlot(
       fetchBookingsForDynamicSlots,
       shouldUseDynamicCustomDaySlots,
     } = require('./dynamicBookingSlots')
-    const bookings = await fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate)
+    const bookings = await fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate, staffId)
     if (!shouldUseDynamicCustomDaySlots({ dayWindows, extendByServices: true, bookings })) {
       const baseSlot = normalizeSlotInput(
         {
@@ -154,7 +155,8 @@ async function validateBookingSlot(
     bookingDate,
     baseSlot,
     slotHours,
-    excludeBookingId
+    excludeBookingId,
+    staffId
   )
 }
 

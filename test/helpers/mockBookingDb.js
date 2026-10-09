@@ -34,7 +34,7 @@ function createMockBookingDb(config = {}) {
     return String(sql).replace(/\s+/g, ' ').trim().toLowerCase()
   }
 
-  function queryBookingsForDate(params, excludeId = null) {
+  function queryBookingsForDate(params, excludeId = null, staffId = null) {
     const sid = params[0]
     const date = params[1]
     let rows = state.bookings.filter(
@@ -46,6 +46,9 @@ function createMockBookingDb(config = {}) {
     if (excludeId != null) {
       rows = rows.filter((b) => String(b.id) !== String(excludeId))
     }
+    if (staffId != null) {
+      rows = rows.filter((b) => String(b.staff_id) === String(staffId))
+    }
     return rows.map((b) => ({
       id: b.id,
       start_hour: b.start_hour,
@@ -53,6 +56,7 @@ function createMockBookingDb(config = {}) {
       end_hour: b.end_hour,
       end_minute: b.end_minute ?? 0,
       status: b.status ?? 'pending',
+      staff_id: b.staff_id ?? null,
     }))
   }
 
@@ -89,7 +93,9 @@ function createMockBookingDb(config = {}) {
     if (s.includes('from bookings') && s.includes('booking_date = $2')) {
       const excludeMatch = s.includes('id !=')
       const excludeId = excludeMatch ? params[2] : null
-      return { rows: queryBookingsForDate(params, excludeId) }
+      const staffMatch = s.match(/staff_id = \$(\d+)/)
+      const staffId = staffMatch ? params[Number(staffMatch[1]) - 1] : null
+      return { rows: queryBookingsForDate(params, excludeId, staffId) }
     }
 
     if (s.includes('from booking_blocks')) {

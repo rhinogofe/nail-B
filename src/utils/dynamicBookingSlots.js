@@ -235,15 +235,22 @@ function matchesDynamicSlotStart(baseSlot, availableSlots) {
   )
 }
 
-async function fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate) {
+async function fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate, staffId = null) {
+  const params = [shopId, bookingDate]
+  let staffFilter = ''
+  if (staffId) {
+    params.push(staffId)
+    staffFilter = ` AND staff_id = $${params.length}`
+  }
   const result = await poolOrClient.query(
     `
-      SELECT id, start_hour, start_minute, end_hour, end_minute, status
+      SELECT id, start_hour, start_minute, end_hour, end_minute, status, staff_id
       FROM bookings
       WHERE shop_id = $1 AND booking_date = $2 AND status != 'cancelled'
+      ${staffFilter}
       ORDER BY start_hour ASC, start_minute ASC
     `,
-    [shopId, bookingDate]
+    params
   )
   return result.rows
 }
@@ -266,11 +273,12 @@ async function validateDynamicBookingStart(
   bookingDate,
   baseSlot,
   slotHours,
-  excludeBookingId = null
+  excludeBookingId = null,
+  staffId = null
 ) {
   const { getEffectiveBookingMinGapMinutes } = require('./bookingMinGapSettings')
   const [bookings, blocks, dayWindows, shopHours, minGapMinutes] = await Promise.all([
-    fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate),
+    fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate, staffId),
     fetchBlocksForDynamicSlots(poolOrClient, shopId, bookingDate),
     getDayHoursForDate(poolOrClient, shopId, bookingDate),
     getShopHours(poolOrClient, shopId),

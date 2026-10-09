@@ -236,6 +236,33 @@ router.get('/unpaid-expire-setting', auth, async (req, res) => {
   }
 })
 
+// ─── Staff public API ─────────────────────────────────────────
+router.get('/staff', auth, async (req, res) => {
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const staffRes = await pool.query(
+      `SELECT id, name FROM staff WHERE shop_id = $1 AND is_active = true ORDER BY sort_order ASC, created_at ASC`,
+      [shopId]
+    )
+    const staffIds = staffRes.rows.map((s) => s.id)
+    let optionsByStaff = {}
+    if (staffIds.length) {
+      const optRes = await pool.query(
+        `SELECT sn.staff_id, sn.nailoption_id FROM staff_nailoptions sn WHERE sn.staff_id = ANY($1::uuid[])`,
+        [staffIds]
+      )
+      for (const row of optRes.rows) {
+        if (!optionsByStaff[row.staff_id]) optionsByStaff[row.staff_id] = []
+        optionsByStaff[row.staff_id].push(row.nailoption_id)
+      }
+    }
+    res.json(staffRes.rows.map((s) => ({ id: s.id, name: s.name, nailoption_ids: optionsByStaff[s.id] || [] })))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/options', auth, async (req, res) => {
   const { date } = req.query
   if (date && !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
@@ -317,6 +344,7 @@ router.get('/', auth, async (req, res) => {
           b.end_minute,
           b.status,
           b.created_at,
+          b.staff_id,
           u.name        AS user_name,
           u.avatar_url  AS user_avatar,
           CASE WHEN b.user_id = $3 THEN true ELSE false END AS is_mine
@@ -417,7 +445,7 @@ router.get('/day-hours', auth, async (req, res) => {
 })
 
 router.post('/', auth, async (req, res) => {
-  const { booking_date, start_hour, option_ids } = req.body
+  const { booking_date, start_hour, option_ids, staff_id } = req.body
   if (!booking_date || start_hour == null)
     return res.status(400).json({ error: 'ต้องระบุ booking_date และ start_hour' })
   if (!Array.isArray(option_ids) || option_ids.length === 0) {
@@ -432,8 +460,21 @@ router.post('/', auth, async (req, res) => {
     const dateError = validateBookingDateRange(booking_date, bookUntilDate)
     if (dateError) return res.status(400).json({ error: dateError })
 
+    // ตรวจ staff_id ถ้าร้านมีช่าง
+    let resolvedStaffId = null
+    if (staff_id) {
+      const staffRow = await pool.query(
+        `SELECT id FROM staff WHERE id = $1 AND shop_id = $2 AND is_active = true LIMIT 1`,
+        [staff_id, shopId]
+      )
+      if (!staffRow.rows.length) return res.status(400).json({ error: 'ไม่พบช่างหรือช่างไม่ว่างรับคิว' })
+      resolvedStaffId = staffRow.rows[0].id
+    }
+
     const slotHours = await getBookingSlotHours(pool, shopId)
-    const slotError = await validateBookingSlot(pool, shopId, booking_date, req.body, slotHours)
+    const slotError = await validateBookingSlot(
+      pool, shopId, booking_date, req.body, slotHours, null, resolvedStaffId
+    )
     if (slotError) return res.status(400).json({ error: slotError })
 
     const uniqueOptionIds = [...new Set(option_ids.map(String))]
@@ -448,39 +489,37 @@ router.post('/', auth, async (req, res) => {
     }
 
     const finalized = await finalizeBookingSlotWithServices(
-      pool,
-      shopId,
-      booking_date,
-      req.body,
-      uniqueOptionIds
+      pool, shopId, booking_date, req.body, uniqueOptionIds, null, resolvedStaffId
     )
     if (finalized.error) return res.status(400).json({ error: finalized.error })
     const slot = finalized.slot
 
-    const overlap = await pool.query(
-      `
-        SELECT id, start_hour, start_minute, end_hour, end_minute
-        FROM bookings
-        WHERE shop_id = $1
-          AND booking_date = $2
-          AND status != 'cancelled'
-      `,
-      [shopId, booking_date]
-    )
-    const hasOverlap = overlap.rows.some((row) => {
+    // Overlap check: ถ้ามีช่าง → เช็คต่อช่าง / ถ้าไม่มีช่าง → เช็คร้านทั้งหมด (เหมือนเดิม)
+    const overlapQuery = resolvedStaffId
+      ? await pool.query(
+          `SELECT id, start_hour, start_minute, end_hour, end_minute
+           FROM bookings
+           WHERE shop_id = $1 AND booking_date = $2 AND staff_id = $3 AND status != 'cancelled'`,
+          [shopId, booking_date, resolvedStaffId]
+        )
+      : await pool.query(
+          `SELECT id, start_hour, start_minute, end_hour, end_minute
+           FROM bookings
+           WHERE shop_id = $1 AND booking_date = $2 AND status != 'cancelled'
+             AND (staff_id IS NULL)`,
+          [shopId, booking_date]
+        )
+
+    const hasOverlap = overlapQuery.rows.some((row) => {
       const existing = bookingRowToMinutes(row, slotHours)
       return rangesOverlap(slot.startM, slot.endM, existing.startM, existing.endM)
     })
     if (hasOverlap) {
-      return res.status(409).json({ error: 'เวลานี้ทับกับคิวอื่น กรุณาเลือกเวลาใหม่' })
+      return res.status(409).json({ error: 'ช่างคนนี้มีคิวในเวลานี้แล้ว กรุณาเลือกช่างหรือเวลาใหม่' })
     }
 
     const blocked = await pool.query(
-      `
-        SELECT id, start_hour, end_hour, is_full_day
-        FROM booking_blocks
-        WHERE shop_id = $1 AND block_date = $2
-      `,
+      `SELECT id, start_hour, end_hour, is_full_day FROM booking_blocks WHERE shop_id = $1 AND block_date = $2`,
       [shopId, booking_date]
     )
     const isBlocked = blocked.rows.some((row) => {
@@ -494,24 +533,10 @@ router.post('/', auth, async (req, res) => {
     }
 
     const result = await pool.query(
-      `
-        INSERT INTO bookings (
-          shop_id, user_id, booking_date,
-          start_hour, start_minute, end_hour, end_minute,
-          status
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment')
-        RETURNING id, booking_date, start_hour, start_minute, end_hour, end_minute, status
-      `,
-      [
-        shopId,
-        req.user.id,
-        booking_date,
-        slot.startHour,
-        slot.startMinute,
-        slot.endHour,
-        slot.endMinute,
-      ]
+      `INSERT INTO bookings (shop_id, user_id, booking_date, start_hour, start_minute, end_hour, end_minute, status, staff_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment', $8)
+       RETURNING id, booking_date, start_hour, start_minute, end_hour, end_minute, status, staff_id`,
+      [shopId, req.user.id, booking_date, slot.startHour, slot.startMinute, slot.endHour, slot.endMinute, resolvedStaffId]
     )
     await syncBookingOptions(pool, result.rows[0].id, uniqueOptionIds)
     const bookingId = result.rows[0].id
