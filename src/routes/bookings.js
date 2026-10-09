@@ -12,7 +12,7 @@ const { finalizeBookingSlotWithServices } = require('../utils/bookingServiceDura
 const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { notifyAdminNewBookingChat, notifyBookingCancelledChat, notifyAdminPaymentSlipChat } = require('../utils/bookingChatNotify')
 const { emitBookingChanged, attachShopEventStream } = require('../utils/bookingEvents')
-const { getShopHours, validateBookingSlot, getDayHoursForDate } = require('../utils/bookingHours')
+const { getShopHours, validateBookingSlot, getDayHoursForDate, getDayHoursBetween } = require('../utils/bookingHours')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
@@ -421,24 +421,16 @@ router.get('/extra-hours', auth, async (req, res) => {
 })
 
 router.get('/day-hours', auth, async (req, res) => {
-  const { from, to, date } = req.query
+  const { from, to, date, staff_id: staffId } = req.query
   try {
     const pool = getPool()
     if (date) {
-      const rows = await getDayHoursForDate(pool, req.shop.id, date)
+      const rows = await getDayHoursForDate(pool, req.shop.id, date, staffId || null)
       return res.json(rows)
     }
     if (!from || !to) return res.status(400).json({ error: 'ต้องระบุ from และ to หรือ date' })
-    const result = await pool.query(
-      `
-        SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute
-        FROM booking_day_hours
-        WHERE shop_id = $1 AND schedule_date BETWEEN $2 AND $3
-        ORDER BY schedule_date ASC, start_hour ASC, start_minute ASC
-      `,
-      [req.shop.id, from, to]
-    )
-    res.json(result.rows)
+    const rows = await getDayHoursBetween(pool, req.shop.id, from, to, staffId || null)
+    res.json(rows)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

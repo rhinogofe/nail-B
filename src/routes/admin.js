@@ -737,7 +737,7 @@ router.patch('/bookings/:id/restore', async (req, res) => {
   try {
     await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
+        `SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status, staff_id FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
         [req.params.id, shopId]
       )
       if (!existing.rows.length || existing.rows[0].status !== 'cancelled') {
@@ -763,7 +763,7 @@ router.patch('/bookings/:id/restore', async (req, res) => {
           start_hour: hasStartHour ? req.body.start_hour : row.start_hour,
           start_minute: req.body.start_minute ?? (hasStartHour ? 0 : (row.start_minute ?? 0)),
         }
-        const slotError = await validateBookingSlot(client, shopId, targetDate, slotBody, slotHours, row.id)
+        const slotError = await validateBookingSlot(client, shopId, targetDate, slotBody, slotHours, row.id, row.staff_id)
         if (slotError) {
           const err = new Error(slotError)
           err.status = 400
@@ -775,7 +775,8 @@ router.patch('/bookings/:id/restore', async (req, res) => {
           targetDate,
           slotBody,
           optionIds,
-          row.id
+          row.id,
+          row.staff_id
         )
         if (finalized.error) {
           const err = new Error(finalized.error)
@@ -790,7 +791,7 @@ router.patch('/bookings/:id/restore', async (req, res) => {
       }
 
       await assertSlotNotBlocked(client, shopId, targetDate, slot)
-      await assertSlotAvailable(client, shopId, targetDate, slot, row.id)
+      await assertSlotAvailable(client, shopId, targetDate, slot, row.id, row.staff_id)
 
       if (moving) {
         await client.query(
@@ -1224,6 +1225,25 @@ router.delete('/extra-hours/:id', async (req, res) => {
   }
 })
 
+async function resolveDayHoursStaffId(pool, shopId, raw) {
+  if (raw == null || raw === '' || raw === 'null') return null
+  const row = await pool.query(
+    `SELECT id FROM staff WHERE id = $1 AND shop_id = $2 LIMIT 1`,
+    [raw, shopId]
+  )
+  if (!row.rows.length) {
+    const err = new Error('ไม่พบช่าง')
+    err.status = 400
+    throw err
+  }
+  return row.rows[0].id
+}
+
+function sendDayHoursError(res, err) {
+  if (err.status) return res.status(err.status).json({ error: err.message })
+  return res.status(500).json({ error: err.message })
+}
+
 router.get('/day-hours', async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7)
   if (!/^\d{4}-\d{2}$/.test(month)) {
@@ -1231,10 +1251,11 @@ router.get('/day-hours', async (req, res) => {
   }
   try {
     const pool = getPool()
-    const rows = await getDayHoursForMonth(pool, req.shop.id, month)
+    const staffId = await resolveDayHoursStaffId(pool, req.shop.id, req.query.staff_id)
+    const rows = await getDayHoursForMonth(pool, req.shop.id, month, staffId)
     res.json(rows)
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    sendDayHoursError(res, err)
   }
 })
 
@@ -1245,10 +1266,11 @@ router.get('/day-hours/:date', async (req, res) => {
   }
   try {
     const pool = getPool()
-    const rows = await getDayHoursForDate(pool, req.shop.id, date)
+    const staffId = await resolveDayHoursStaffId(pool, req.shop.id, req.query.staff_id)
+    const rows = await getDayHoursForDate(pool, req.shop.id, date, staffId, { fallback: false })
     res.json(rows)
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    sendDayHoursError(res, err)
   }
 })
 
@@ -1256,22 +1278,24 @@ router.post('/day-hours', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const staffId = await resolveDayHoursStaffId(pool, shopId, req.body?.staff_id)
     const slotHours = await getBookingSlotHours(pool, shopId)
     const scheduleDate = String(req.body?.schedule_date || '').trim()
-    const existing = await getDayHoursForDate(pool, shopId, scheduleDate)
+    const existing = await getDayHoursForDate(pool, shopId, scheduleDate, staffId, { fallback: false })
     const validated = validateDayHourPayload(req.body, existing, slotHours)
     if (!validated.ok) return res.status(400).json({ error: validated.error })
 
     const result = await pool.query(
       `
         INSERT INTO booking_day_hours (
-          shop_id, schedule_date, start_hour, start_minute, end_hour, end_minute
+          shop_id, staff_id, schedule_date, start_hour, start_minute, end_hour, end_minute
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, staff_id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
       `,
       [
         shopId,
+        staffId,
         validated.scheduleDate,
         validated.start_hour,
         validated.start_minute,
@@ -1282,7 +1306,7 @@ router.post('/day-hours', async (req, res) => {
     emitShopLive(shopId, 'schedule', { booking_date: validated.scheduleDate })
     res.status(201).json(result.rows[0])
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    sendDayHoursError(res, err)
   }
 })
 
@@ -1295,8 +1319,9 @@ router.post('/day-hours/generate-full-day', async (req, res) => {
   try {
     const pool = getPool()
     const shopId = req.shop.id
+    const staffId = await resolveDayHoursStaffId(pool, shopId, req.body?.staff_id)
     const replace = req.body?.replace === true
-    const existing = await getDayHoursForDate(pool, shopId, scheduleDate)
+    const existing = await getDayHoursForDate(pool, shopId, scheduleDate, staffId, { fallback: false })
     if (existing.length && !replace) {
       return res.status(409).json({ error: 'วันนี้มีช่วงเวลาอยู่แล้ว กดยืนยันเพื่อแทนที่ทั้งหมด' })
     }
@@ -1317,8 +1342,8 @@ router.post('/day-hours/generate-full-day', async (req, res) => {
     const rows = await withTransaction(async (client) => {
       if (existing.length) {
         await client.query(
-          `DELETE FROM booking_day_hours WHERE shop_id = $1 AND schedule_date = $2`,
-          [shopId, scheduleDate]
+          `DELETE FROM booking_day_hours WHERE shop_id = $1 AND schedule_date = $2 AND staff_id IS NOT DISTINCT FROM $3`,
+          [shopId, scheduleDate, staffId]
         )
       }
 
@@ -1327,13 +1352,14 @@ router.post('/day-hours/generate-full-day', async (req, res) => {
         const result = await client.query(
           `
             INSERT INTO booking_day_hours (
-              shop_id, schedule_date, start_hour, start_minute, end_hour, end_minute
+              shop_id, staff_id, schedule_date, start_hour, start_minute, end_hour, end_minute
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, staff_id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
           `,
           [
             shopId,
+            staffId,
             scheduleDate,
             window.start_hour,
             window.start_minute,
@@ -1349,7 +1375,7 @@ router.post('/day-hours/generate-full-day', async (req, res) => {
     emitShopLive(shopId, 'schedule', { booking_date: scheduleDate })
     res.status(201).json({ success: true, count: rows.length, rows })
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    sendDayHoursError(res, err)
   }
 })
 
@@ -1360,7 +1386,7 @@ router.patch('/day-hours/:id', async (req, res) => {
     const slotHours = await getBookingSlotHours(pool, shopId)
     const existingRows = await pool.query(
       `
-        SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute
+        SELECT id, staff_id, schedule_date, start_hour, start_minute, end_hour, end_minute
         FROM booking_day_hours
         WHERE id = $1 AND shop_id = $2
       `,
@@ -1370,7 +1396,7 @@ router.patch('/day-hours/:id', async (req, res) => {
     if (!current) return res.status(404).json({ error: 'ไม่พบรายการ' })
 
     const scheduleDate = String(current.schedule_date).slice(0, 10)
-    const dayWindows = await getDayHoursForDate(pool, shopId, scheduleDate)
+    const dayWindows = await getDayHoursForDate(pool, shopId, scheduleDate, current.staff_id, { fallback: false })
     const oldParsed = windowToMinutes(current)
     if (!oldParsed) return res.status(400).json({ error: 'ข้อมูลเวลาเดิมไม่ถูกต้อง' })
 
@@ -2382,7 +2408,7 @@ router.patch('/bookings/:id', async (req, res) => {
     const shopId = req.shop.id
     const booking = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
+        `SELECT id, booking_date, start_hour, start_minute, end_hour, end_minute, status, staff_id FROM bookings WHERE id = $1 AND shop_id = $2 FOR UPDATE`,
         [req.params.id, shopId]
       )
       if (existing.rowCount === 0) throw { status: 404, message: 'ไม่พบคิว' }
@@ -2447,7 +2473,8 @@ router.patch('/bookings/:id', async (req, res) => {
           effectiveDate,
           slotBody,
           slotHours,
-          req.params.id
+          req.params.id,
+          row.staff_id
         )
         if (slotError) {
           throw { status: 400, message: slotError }
@@ -2459,7 +2486,8 @@ router.patch('/bookings/:id', async (req, res) => {
           effectiveDate,
           slotBody,
           effectiveOptionIds,
-          req.params.id
+          req.params.id,
+          row.staff_id
         )
         if (finalized.error) {
           throw { status: 400, message: finalized.error }
@@ -2474,7 +2502,7 @@ router.patch('/bookings/:id', async (req, res) => {
 
         await assertSlotNotBlocked(client, shopId, effectiveDate, effectiveSlot)
         if (dateChanged || slotChanged) {
-          await assertSlotAvailable(client, shopId, effectiveDate, effectiveSlot, req.params.id)
+          await assertSlotAvailable(client, shopId, effectiveDate, effectiveSlot, req.params.id, row.staff_id)
         }
       } else {
         slotHours = await getBookingSlotHours(client, shopId)
@@ -4371,7 +4399,12 @@ router.post('/staff', async (req, res) => {
     const shopId = req.shop.id
     const name = String(req.body?.name || '').trim()
     if (!name) return res.status(400).json({ error: 'กรุณาระบุชื่อช่าง' })
-    const nailoptionIds = Array.isArray(req.body?.nailoption_ids) ? req.body.nailoption_ids.map(String) : []
+    const nailoptionIds = Array.isArray(req.body?.nailoption_ids)
+      ? req.body.nailoption_ids.map(String).filter(Boolean)
+      : []
+    if (!nailoptionIds.length) {
+      return res.status(400).json({ error: 'กรุณาเลือกบริการอย่างน้อย 1 รายการ' })
+    }
 
     const maxOrder = await pool.query(
       `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM staff WHERE shop_id = $1`, [shopId]
@@ -4419,7 +4452,12 @@ router.patch('/staff/:id', async (req, res) => {
       )
     }
     if (has('nailoption_ids')) {
-      const ids = Array.isArray(req.body.nailoption_ids) ? req.body.nailoption_ids.map(String) : []
+      const ids = Array.isArray(req.body.nailoption_ids)
+        ? req.body.nailoption_ids.map(String).filter(Boolean)
+        : []
+      if (!ids.length) {
+        return res.status(400).json({ error: 'กรุณาเลือกบริการอย่างน้อย 1 รายการ' })
+      }
       await pool.query(`DELETE FROM staff_nailoptions WHERE staff_id = $1`, [staffId])
       if (ids.length) {
         await pool.query(

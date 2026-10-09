@@ -65,14 +65,24 @@ function createMockBookingDb(config = {}) {
 
     if (s.includes('from booking_day_hours') && s.includes('schedule_date = $2')) {
       const date = params[1]
-      const rows = (state.dayHours[date] || []).map((w, i) => ({
+      let rows = (state.dayHours[date] || []).map((w, i) => ({
         id: w.id ?? i + 1,
         schedule_date: date,
         start_hour: w.start_hour,
         start_minute: w.start_minute ?? 0,
         end_hour: w.end_hour,
         end_minute: w.end_minute ?? 0,
+        staff_id: w.staff_id ?? null,
       }))
+      if (s.includes('staff_id is null')) {
+        rows = rows.filter((w) => w.staff_id == null)
+      } else {
+        const staffMatch = s.match(/staff_id = \$(\d+)/)
+        if (staffMatch) {
+          const staffId = params[Number(staffMatch[1]) - 1]
+          rows = rows.filter((w) => String(w.staff_id) === String(staffId))
+        }
+      }
       return { rows }
     }
 

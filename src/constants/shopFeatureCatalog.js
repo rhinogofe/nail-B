@@ -107,6 +107,12 @@ const SHOP_FEATURE_CATALOG = [
         default: true,
         configNote: 'ตั้งค่า: เวลา & คิว → ความยาวคิว & แสดงผล · UI & ข้อความ → ข้อความจองคิว',
       },
+      {
+        key: 'feat_outside_push',
+        label: 'แจ้งเตือนนอกแอป',
+        default: true,
+        configNote: 'ปิดแล้วซ่อนสวิตช์ในเมนูบัญชี และไม่ส่งการแจ้งเตือนนอกแอปของร้านนี้',
+      },
     ],
   },
 ]

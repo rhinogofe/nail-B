@@ -47,11 +47,11 @@ function applyServiceDurationToSlot(baseSlot, totalServiceMinutes, slotHours = 2
   }
 }
 
-async function validateBookingEndWithinDay(poolOrClient, shopId, bookingDate, slot) {
+async function validateBookingEndWithinDay(poolOrClient, shopId, bookingDate, slot, staffId = null) {
   const allowPastClose = await getExtendPastCloseSetting(poolOrClient, shopId)
   if (allowPastClose) return null
 
-  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
   if (dayWindows.length) {
     const maxEnd = Math.max(
       ...dayWindows.map((w) => toMinutes(Number(w.end_hour), normalizeMinute(w.end_minute)))
@@ -79,7 +79,7 @@ async function validateBookingStartSlot(
   excludeBookingId = null,
   staffId = null
 ) {
-  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
 
   if (dayWindows.length && !extendEnabled) {
@@ -175,7 +175,7 @@ async function finalizeBookingSlotWithServices(
     const startOnly = normalizeStartSlotInput(body, slotHours)
     if (!startOnly) return { error: 'ช่วงเวลาไม่ถูกต้อง' }
 
-    const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+    const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
     if (dayWindows.length) {
       if (!matchesDayWindowStart(startOnly, dayWindows)) {
         return { error: 'ช่วงเวลานี้ไม่ตรงกับเวลาที่เปิดรับวันนี้' }
@@ -189,7 +189,8 @@ async function finalizeBookingSlotWithServices(
         shopId,
         bookingDate,
         startOnly.startHour,
-        slotHours
+        slotHours,
+        staffId
       )
       if (hourError) return { error: hourError }
     }
@@ -207,7 +208,7 @@ async function finalizeBookingSlotWithServices(
     return { error: 'บริการที่เลือกยาวเกินเวลาเปิดรับ' }
   }
 
-  const endError = await validateBookingEndWithinDay(poolOrClient, shopId, bookingDate, slot)
+  const endError = await validateBookingEndWithinDay(poolOrClient, shopId, bookingDate, slot, staffId)
   if (endError) return { error: endError }
 
   return { slot, slotHours, totalServiceMinutes }

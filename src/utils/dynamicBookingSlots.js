@@ -280,7 +280,7 @@ async function validateDynamicBookingStart(
   const [bookings, blocks, dayWindows, shopHours, minGapMinutes] = await Promise.all([
     fetchBookingsForDynamicSlots(poolOrClient, shopId, bookingDate, staffId),
     fetchBlocksForDynamicSlots(poolOrClient, shopId, bookingDate),
-    getDayHoursForDate(poolOrClient, shopId, bookingDate),
+    getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId),
     getShopHours(poolOrClient, shopId),
     getEffectiveBookingMinGapMinutes(poolOrClient, shopId),
   ])

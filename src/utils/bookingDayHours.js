@@ -201,36 +201,94 @@ function isHourWithinDayWindows(hour, slotHours, dayWindows) {
   return isSlotWithinDayWindows(hour, 0, slotHours, dayWindows)
 }
 
-async function getDayHoursForDate(poolOrClient, shopId, date) {
+const DAY_HOUR_COLUMNS = 'id, schedule_date, start_hour, start_minute, end_hour, end_minute, staff_id, created_at'
+
+function normalizeOptionalStaffId(staffId) {
+  if (staffId == null || staffId === '') return null
+  return staffId
+}
+
+async function queryDayHourRows(poolOrClient, shopId, date, staffId) {
+  const staffClause = staffId ? 'staff_id = $3' : 'staff_id IS NULL'
+  const params = staffId ? [shopId, date, staffId] : [shopId, date]
   const result = await poolOrClient.query(
     `
-      SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+      SELECT ${DAY_HOUR_COLUMNS}
       FROM booking_day_hours
-      WHERE shop_id = $1 AND schedule_date = $2
+      WHERE shop_id = $1 AND schedule_date = $2 AND ${staffClause}
       ORDER BY start_hour ASC, start_minute ASC
     `,
-    [shopId, date]
+    params
   )
   return result.rows
 }
 
-async function getDayHoursForMonth(poolOrClient, shopId, monthYm) {
+/**
+ * staffId ไม่ส่ง = เวลาทั้งร้าน (staff_id IS NULL)
+ * fallback true (ค่าเริ่มต้น): ช่างมีช่วงของตัวเองใช้ช่วงนั้น ไม่งั้นใช้เวลาทั้งร้าน
+ * fallback false: คืนเฉพาะช่วงของช่างคนนั้น (หน้าแอดมิน)
+ */
+async function getDayHoursForDate(poolOrClient, shopId, date, staffId = null, options = {}) {
+  const resolvedStaffId = normalizeOptionalStaffId(staffId)
+  const fallback = options.fallback !== false
+  if (!resolvedStaffId) {
+    return queryDayHourRows(poolOrClient, shopId, date, null)
+  }
+  const own = await queryDayHourRows(poolOrClient, shopId, date, resolvedStaffId)
+  if (own.length || !fallback) return own
+  return queryDayHourRows(poolOrClient, shopId, date, null)
+}
+
+async function getDayHoursForMonth(poolOrClient, shopId, monthYm, staffId = null) {
   const [y, m] = monthYm.split('-').map(Number)
   if (!y || !m) return []
   const fromDate = new Date(y, m - 1, 1)
   const toDate = new Date(y, m, 0)
   const from = `${fromDate.getFullYear()}-${String(fromDate.getMonth() + 1).padStart(2, '0')}-${String(fromDate.getDate()).padStart(2, '0')}`
   const to = `${toDate.getFullYear()}-${String(toDate.getMonth() + 1).padStart(2, '0')}-${String(toDate.getDate()).padStart(2, '0')}`
+  const resolvedStaffId = normalizeOptionalStaffId(staffId)
+  const staffClause = resolvedStaffId ? 'staff_id = $4' : 'staff_id IS NULL'
+  const params = resolvedStaffId ? [shopId, from, to, resolvedStaffId] : [shopId, from, to]
   const result = await poolOrClient.query(
     `
-      SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute, created_at
+      SELECT ${DAY_HOUR_COLUMNS}
+      FROM booking_day_hours
+      WHERE shop_id = $1 AND schedule_date BETWEEN $2 AND $3 AND ${staffClause}
+      ORDER BY schedule_date ASC, start_hour ASC, start_minute ASC
+    `,
+    params
+  )
+  return result.rows
+}
+
+function preferStaffDayHours(rows, staffId) {
+  const resolvedStaffId = normalizeOptionalStaffId(staffId)
+  if (!resolvedStaffId) return (rows || []).filter((row) => !row.staff_id)
+  const byDate = new Map()
+  for (const row of rows || []) {
+    const date = String(row.schedule_date).slice(0, 10)
+    if (!byDate.has(date)) byDate.set(date, [])
+    byDate.get(date).push(row)
+  }
+  const out = []
+  for (const list of byDate.values()) {
+    const own = list.filter((row) => String(row.staff_id) === String(resolvedStaffId))
+    out.push(...(own.length ? own : list.filter((row) => !row.staff_id)))
+  }
+  return out
+}
+
+async function getDayHoursBetween(poolOrClient, shopId, from, to, staffId = null) {
+  const result = await poolOrClient.query(
+    `
+      SELECT id, schedule_date, start_hour, start_minute, end_hour, end_minute, staff_id
       FROM booking_day_hours
       WHERE shop_id = $1 AND schedule_date BETWEEN $2 AND $3
       ORDER BY schedule_date ASC, start_hour ASC, start_minute ASC
     `,
     [shopId, from, to]
   )
-  return result.rows
+  return preferStaffDayHours(result.rows, staffId)
 }
 
 module.exports = {
@@ -249,4 +307,6 @@ module.exports = {
   isHourWithinDayWindows,
   getDayHoursForDate,
   getDayHoursForMonth,
+  getDayHoursBetween,
+  preferStaffDayHours,
 }

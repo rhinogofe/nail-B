@@ -554,6 +554,11 @@ async function ensureSchema() {
     );
   `)
   await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS staff_id UUID REFERENCES staff(id) ON DELETE SET NULL`)
+  await pool.query(`ALTER TABLE booking_day_hours ADD COLUMN IF NOT EXISTS staff_id UUID REFERENCES staff(id) ON DELETE CASCADE`)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_booking_day_hours_shop_staff_date
+      ON booking_day_hours (shop_id, staff_id, schedule_date)
+  `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_date_hour`)
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_shop_date_hour`)

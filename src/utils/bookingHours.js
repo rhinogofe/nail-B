@@ -1,6 +1,6 @@
 const { getShopSettings } = require('./shopSettings')
 const { normalizeBookingSlotHours, DEFAULT_SLOT_HOURS } = require('./bookingSlotHours')
-const { getDayHoursForDate } = require('./bookingDayHours')
+const { getDayHoursForDate, getDayHoursBetween } = require('./bookingDayHours')
 const {
   normalizeSlotInput,
   normalizeStartSlotInput,
@@ -55,9 +55,9 @@ function isWithinNormalHours(startHour, openHour, lastBookingHour) {
   return startHour >= openHour && startHour <= lastBookingHour
 }
 
-async function validateBookingStartHour(poolOrClient, shopId, bookingDate, startHour, duration = DEFAULT_SLOT_HOURS) {
+async function validateBookingStartHour(poolOrClient, shopId, bookingDate, startHour, duration = DEFAULT_SLOT_HOURS, staffId = null) {
   const slotHours = normalizeBookingSlotHours(duration)
-  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
   if (dayWindows.length) {
     return 'วันนี้ใช้เวลาเปิด-ปิดเฉพาะวัน กรุณาเลือกช่วงเวลาที่ตั้งไว้'
   }
@@ -85,7 +85,7 @@ async function validateBookingSlot(
   const slot = normalizeSlotInput(body, slotHours)
   if (!slot) return 'ช่วงเวลาไม่ถูกต้อง'
 
-  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate)
+  const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
   if (dayWindows.length) {
     const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
     if (!extendEnabled) {
@@ -133,7 +133,8 @@ async function validateBookingSlot(
       shopId,
       bookingDate,
       startOnly.startHour,
-      slotHours
+      slotHours,
+      staffId
     )
     if (hourError) return hourError
     return null
@@ -164,6 +165,7 @@ module.exports = {
   getShopHours,
   getExtraHoursForDate,
   getDayHoursForDate,
+  getDayHoursBetween,
   isWithinExtraWindow,
   isWithinNormalHours,
   validateBookingStartHour,

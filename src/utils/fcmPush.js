@@ -149,7 +149,16 @@ function buildChatPushPayload({ shopSlug, title, body, userId, target = 'admin',
   }
 }
 
+async function outsidePushEnabled(pool, shopId) {
+  const { getShopFeatureFlags } = require('./shopFeatureFlags')
+  const { features } = await getShopFeatureFlags(pool, shopId)
+  return features?.feat_outside_push !== false
+}
+
 async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, title = 'แจ้งเตือนระบบ', messageId = null, bookingId = null }) {
+  if (!(await outsidePushEnabled(pool, shopId))) {
+    return { ok: true, skipped: true, reason: 'feature_off' }
+  }
   const shop = await getShopPushContext(pool, shopId)
   if (!shop) return { ok: false, skipped: true, reason: 'shop_not_found' }
 
@@ -173,6 +182,9 @@ async function pushAfterSystemChatNotify(pool, shopId, { body, relatedUserId, ti
 }
 
 async function pushAfterCustomerChatNotify(pool, shopId, userId, { body, title = 'แจ้งเตือนจากร้าน', messageId = null, bookingId = null }) {
+  if (!(await outsidePushEnabled(pool, shopId))) {
+    return { ok: true, skipped: true, reason: 'feature_off' }
+  }
   const shop = await getShopPushContext(pool, shopId)
   if (!shop || !userId) return { ok: false, skipped: true, reason: 'missing_target' }
 
@@ -202,6 +214,9 @@ async function resolveUserName(pool, userId) {
 }
 
 async function pushAfterCustomerChatMessage(pool, shopId, { customerId, customerName, body, imageUrl = null, messageId = null }) {
+  if (!(await outsidePushEnabled(pool, shopId))) {
+    return { ok: true, skipped: true, reason: 'feature_off' }
+  }
   const shop = await getShopPushContext(pool, shopId)
   if (!shop || !customerId) return { ok: false, skipped: true, reason: 'missing_target' }
 
@@ -220,6 +235,9 @@ async function pushAfterCustomerChatMessage(pool, shopId, { customerId, customer
 }
 
 async function pushAfterAdminChatMessage(pool, shopId, customerId, { body, imageUrl = null, messageId = null }) {
+  if (!(await outsidePushEnabled(pool, shopId))) {
+    return { ok: true, skipped: true, reason: 'feature_off' }
+  }
   const shop = await getShopPushContext(pool, shopId)
   if (!shop || !customerId) return { ok: false, skipped: true, reason: 'missing_target' }
 
