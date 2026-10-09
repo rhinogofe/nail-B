@@ -1,4 +1,5 @@
 const { getDayHoursForDate } = require('./bookingDayHours')
+const { getDayClosureError } = require('./bookingDayClosures')
 const { getShopHours } = require('./bookingHours')
 const { normalizeBookingSlotHours } = require('./bookingSlotHours')
 const { getExtendByServicesSetting, getExtendPastCloseSetting } = require('./extendBookingSettings')
@@ -79,6 +80,9 @@ async function validateBookingStartSlot(
   excludeBookingId = null,
   staffId = null
 ) {
+  const closureError = await getDayClosureError(poolOrClient, shopId, bookingDate, staffId)
+  if (closureError) return closureError
+
   const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
   const extendEnabled = await getExtendByServicesSetting(poolOrClient, shopId)
 

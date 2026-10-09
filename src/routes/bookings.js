@@ -13,6 +13,7 @@ const { notifyShopNewBooking } = require('../utils/bookingLineNotify')
 const { notifyAdminNewBookingChat, notifyBookingCancelledChat, notifyAdminPaymentSlipChat } = require('../utils/bookingChatNotify')
 const { emitBookingChanged, attachShopEventStream } = require('../utils/bookingEvents')
 const { getShopHours, validateBookingSlot, getDayHoursForDate, getDayHoursBetween } = require('../utils/bookingHours')
+const { getDayClosureStatus } = require('../utils/bookingDayClosures')
 const { getBookingSlotHours, bookingEndHour, normalizeBookingDisplayMode } = require('../utils/bookingSlotHours')
 const { normalizeSlotInput, rangesOverlap, bookingRowToMinutes } = require('../utils/bookingSlotTimes')
 const { getUiSettings } = require('../utils/shopUiSettings')
@@ -415,6 +416,20 @@ router.get('/extra-hours', auth, async (req, res) => {
       [req.shop.id, from, to]
     )
     res.json(result.rows)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/day-closure', auth, async (req, res) => {
+  const date = String(req.query.date || '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'date ต้องเป็น YYYY-MM-DD' })
+  }
+  try {
+    const pool = getPool()
+    const status = await getDayClosureStatus(pool, req.shop.id, date, req.query.staff_id || null)
+    res.json(status)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

@@ -19,6 +19,7 @@ function createMockBookingDb(config = {}) {
     bookings: [...(config.bookings || [])],
     /** @type {Record<string, Array<object>>} */
     blocks: { ...(config.blocks || {}) },
+    closures: [...(config.closures || [])],
     /** @type {Record<string|number, { duration_min: number }>} */
     options: {
       1: { duration_min: 60 },
@@ -62,6 +63,17 @@ function createMockBookingDb(config = {}) {
 
   async function query(sql, params = []) {
     const s = normalizeSql(sql)
+
+    if (s.includes('from booking_day_closures') && s.includes('schedule_date = $2')) {
+      const date = params[1]
+      const staffId = params[2]
+      const rows = (state.closures || []).filter((row) => {
+        if (String(row.schedule_date).slice(0, 10) !== String(date).slice(0, 10)) return false
+        if (row.staff_id == null) return true
+        return staffId != null && String(row.staff_id) === String(staffId)
+      }).map((row) => ({ staff_id: row.staff_id ?? null }))
+      return { rows }
+    }
 
     if (s.includes('from booking_day_hours') && s.includes('schedule_date = $2')) {
       const date = params[1]

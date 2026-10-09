@@ -144,3 +144,32 @@ test('โหมดขยายและมีคิวแล้ว: คิวช
   assert.equal(bSameTime.error, undefined)
   assert.equal(bSameTime.slot.startHour, 10)
 })
+
+test('ปิดไม่รับคิวเฉพาะช่าง ไม่กระทบช่างอีกคน และปิดทั้งร้านกระทบทุกคน', async () => {
+  const staffClosed = db({
+    dayHours: {
+      [DATE]: [{ start_hour: 10, start_minute: 0, end_hour: 12, end_minute: 0 }],
+    },
+    closures: [{ schedule_date: DATE, staff_id: STAFF_A }],
+  })
+  const a = await validateBookingSlot(
+    staffClosed, SHOP_ID, DATE, { start_hour: 10, start_minute: 0 }, 2, null, STAFF_A
+  )
+  assert.match(a, /ช่างคนนี้ไม่รับคิว/)
+  const b = await validateBookingSlot(
+    staffClosed, SHOP_ID, DATE, { start_hour: 10, start_minute: 0 }, 2, null, STAFF_B
+  )
+  assert.equal(b, null)
+
+  const shopClosed = db({
+    closures: [{ schedule_date: DATE, staff_id: null }],
+  })
+  const anyone = await validateBookingSlot(
+    shopClosed, SHOP_ID, DATE, { start_hour: 10, start_minute: 0 }, 2, null, STAFF_B
+  )
+  assert.match(anyone, /ร้านไม่รับคิว/)
+  const finalized = await finalizeBookingSlotWithServices(
+    shopClosed, SHOP_ID, DATE, { start_hour: 10, start_minute: 0 }, [1], null, STAFF_A
+  )
+  assert.match(finalized.error || '', /ร้านไม่รับคิว/)
+})

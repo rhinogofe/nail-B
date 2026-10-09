@@ -29,6 +29,7 @@ const {
   windowToMinutes,
   computeDayHourCascadeUpdates,
 } = require('../utils/bookingDayHours')
+const { listDayClosuresForMonth, setDayClosure, getDayClosureStatus } = require('../utils/bookingDayClosures')
 const {
   getBookingSlotHours,
   bookingEndHour,
@@ -1501,6 +1502,42 @@ router.delete('/day-hours/:id', async (req, res) => {
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/day-closures', async (req, res) => {
+  const month = req.query.month || new Date().toISOString().slice(0, 7)
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return res.status(400).json({ error: 'month ต้องเป็น YYYY-MM' })
+  }
+  try {
+    const pool = getPool()
+    const staffId = await resolveDayHoursStaffId(pool, req.shop.id, req.query.staff_id)
+    const rows = await listDayClosuresForMonth(pool, req.shop.id, month, staffId)
+    res.json(rows)
+  } catch (err) {
+    sendDayHoursError(res, err)
+  }
+})
+
+router.post('/day-closures', async (req, res) => {
+  const scheduleDate = String(req.body?.schedule_date || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduleDate)) {
+    return res.status(400).json({ error: 'schedule_date ต้องเป็น YYYY-MM-DD' })
+  }
+  if (typeof req.body?.closed !== 'boolean') {
+    return res.status(400).json({ error: 'ต้องระบุ closed เป็น true หรือ false' })
+  }
+  try {
+    const pool = getPool()
+    const shopId = req.shop.id
+    const staffId = await resolveDayHoursStaffId(pool, shopId, req.body?.staff_id)
+    await setDayClosure(pool, shopId, scheduleDate, staffId, req.body.closed)
+    const status = await getDayClosureStatus(pool, shopId, scheduleDate, staffId)
+    emitShopLive(shopId, 'schedule', { booking_date: scheduleDate })
+    res.json({ success: true, ...status })
+  } catch (err) {
+    sendDayHoursError(res, err)
   }
 })
 

@@ -1,6 +1,7 @@
 const { getShopSettings } = require('./shopSettings')
 const { normalizeBookingSlotHours, DEFAULT_SLOT_HOURS } = require('./bookingSlotHours')
 const { getDayHoursForDate, getDayHoursBetween } = require('./bookingDayHours')
+const { getDayClosureError } = require('./bookingDayClosures')
 const {
   normalizeSlotInput,
   normalizeStartSlotInput,
@@ -84,6 +85,9 @@ async function validateBookingSlot(
 ) {
   const slot = normalizeSlotInput(body, slotHours)
   if (!slot) return 'ช่วงเวลาไม่ถูกต้อง'
+
+  const closureError = await getDayClosureError(poolOrClient, shopId, bookingDate, staffId)
+  if (closureError) return closureError
 
   const dayWindows = await getDayHoursForDate(poolOrClient, shopId, bookingDate, staffId)
   if (dayWindows.length) {

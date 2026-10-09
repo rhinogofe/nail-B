@@ -559,6 +559,21 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS ix_booking_day_hours_shop_staff_date
       ON booking_day_hours (shop_id, staff_id, schedule_date)
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS booking_day_closures (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      schedule_date DATE NOT NULL,
+      staff_id UUID REFERENCES staff(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_day_closures_shop_date
+      ON booking_day_closures (shop_id, schedule_date)
+      WHERE staff_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_day_closures_shop_staff_date
+      ON booking_day_closures (shop_id, schedule_date, staff_id)
+      WHERE staff_id IS NOT NULL;
+  `)
 
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_date_hour`)
   await pool.query(`DROP INDEX IF EXISTS ux_bookings_active_shop_date_hour`)
