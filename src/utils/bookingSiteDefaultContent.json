@@ -112,7 +112,8 @@
       "showImage": true,
       "image": "",
       "link": "",
-      "type": "classic"
+      "type": "classic",
+      "icon": "palette"
     },
     {
       "name": "Signature Look",
@@ -120,7 +121,8 @@
       "showImage": true,
       "image": "",
       "link": "",
-      "type": "signature"
+      "type": "signature",
+      "icon": "brush"
     },
     {
       "name": "Spa Hands",
@@ -128,7 +130,8 @@
       "showImage": true,
       "image": "",
       "link": "",
-      "type": "spa-hands"
+      "type": "spa-hands",
+      "icon": "droplet"
     }
   ],
   "promos": [

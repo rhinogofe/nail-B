@@ -4,6 +4,7 @@ const { extractInstagramShortcode } = require('../src/utils/instagramUrl')
 const {
   extractTikTokMediaId,
   normalizeTikTokPageUrl,
+  extractTikTokCoverFromHtml,
 } = require('../src/utils/tiktokUrl')
 
 test('extractInstagramShortcode supports post and reel URLs', () => {
@@ -35,4 +36,18 @@ test('normalizeTikTokPageUrl strips query and hash', () => {
     normalizeTikTokPageUrl('https://www.tiktok.com/@u/video/1?is_from_webapp=1#tag'),
     'https://www.tiktok.com/@u/video/1'
   )
+})
+
+test('extractTikTokCoverFromHtml reads unicode-escaped cover from page JSON', () => {
+  const html = '{"video":{"cover":"https:\\u002F\\u002Fp16-common-sign.tiktokcdn.com\\u002Fabc~tplv.image?x=1\\u0026y=2"}}'
+  assert.equal(
+    extractTikTokCoverFromHtml(html),
+    'https://p16-common-sign.tiktokcdn.com/abc~tplv.image?x=1&y=2'
+  )
+})
+
+test('extractTikTokCoverFromHtml reads og:image from link-preview HTML', () => {
+  const html = '<meta property="og:image" content="https://p19.tiktokcdn.com/photo.jpeg?a=1&amp;b=2">'
+  assert.equal(extractTikTokCoverFromHtml(html), 'https://p19.tiktokcdn.com/photo.jpeg?a=1&b=2')
+  assert.equal(extractTikTokCoverFromHtml('<html></html>'), null)
 })

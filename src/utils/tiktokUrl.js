@@ -26,6 +26,8 @@ function normalizeTikTokPageUrl(url) {
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+// TikTok only renders og:image for link-preview crawlers; browsers get the SPA payload instead.
+const PREVIEW_BOT_UA = 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)'
 
 async function resolveTikTokVideo(inputUrl) {
   const trimmed = String(inputUrl || '').trim()
@@ -70,9 +72,29 @@ async function resolveTikTokVideo(inputUrl) {
 
 function decodeOgImage(value) {
   return String(value || '')
-    .replace(/\\u002F/g, '/')
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\u0026/gi, '&')
     .replace(/\\\//g, '/')
     .replace(/&amp;/g, '&')
+}
+
+const COVER_PATTERNS = [
+  /property="og:image"\s+content="([^"]+)"/i,
+  /content="([^"]+)"\s+property="og:image"/i,
+  /"cover":"(https?:[^"]+)"/,
+  /"originCover":"(https?:[^"]+)"/,
+  /"imageURL":\{"urlList":\["(https?:[^"]+)"/,
+]
+
+function extractTikTokCoverFromHtml(html) {
+  const text = String(html || '')
+  for (const pattern of COVER_PATTERNS) {
+    const match = text.match(pattern)
+    if (!match?.[1]) continue
+    const url = decodeOgImage(match[1])
+    if (/^https?:\/\//.test(url)) return url
+  }
+  return null
 }
 
 async function fetchTikTokThumbnailFromOembed(tiktokUrl) {
@@ -94,32 +116,18 @@ async function fetchTikTokThumbnailFromOembed(tiktokUrl) {
   }
 }
 
-async function fetchTikTokThumbnailFromOg(tiktokUrl) {
+async function fetchTikTokThumbnailFromOg(tiktokUrl, userAgent = BROWSER_UA) {
   try {
     const response = await fetch(tiktokUrl, {
       redirect: 'follow',
       headers: {
-        'User-Agent': BROWSER_UA,
+        'User-Agent': userAgent,
         'Accept-Language': 'en-US,en;q=0.9,th;q=0.8',
         Accept: 'text/html,application/xhtml+xml',
       },
     })
     if (!response.ok) return null
-    const html = await response.text()
-    const patterns = [
-      /property="og:image"\s+content="([^"]+)"/i,
-      /content="([^"]+)"\s+property="og:image"/i,
-      /"cover":"(https:\\\\[^"]+)"/,
-      /"originCover":"(https:\\\\[^"]+)"/,
-    ]
-    for (const pattern of patterns) {
-      const match = html.match(pattern)
-      if (match?.[1]) {
-        const url = decodeOgImage(match[1])
-        if (url.startsWith('http')) return url
-      }
-    }
-    return null
+    return extractTikTokCoverFromHtml(await response.text())
   } catch {
     return null
   }
@@ -141,9 +149,11 @@ async function fetchTikTokThumbnail(tiktokUrl) {
     const fromOembed = await fetchTikTokThumbnailFromOembed(url)
     if (fromOembed) return fromOembed
   }
-  for (const url of candidates) {
-    const fromOg = await fetchTikTokThumbnailFromOg(url)
-    if (fromOg) return fromOg
+  for (const userAgent of [PREVIEW_BOT_UA, BROWSER_UA]) {
+    for (const url of candidates) {
+      const fromPage = await fetchTikTokThumbnailFromOg(url, userAgent)
+      if (fromPage) return fromPage
+    }
   }
   return null
 }
@@ -154,4 +164,5 @@ module.exports = {
   normalizeTikTokPageUrl,
   resolveTikTokVideo,
   fetchTikTokThumbnail,
+  extractTikTokCoverFromHtml,
 }
