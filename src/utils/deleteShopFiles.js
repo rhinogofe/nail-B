@@ -1,6 +1,6 @@
 const fs = require('fs').promises
 const path = require('path')
-const { getUiUploadRoot, getChatUploadRoot } = require('./uploadPaths')
+const { getUiUploadRoot, getChatUploadRoot, getBookingSiteUploadRoot } = require('./uploadPaths')
 const { deleteBookingPaymentSlip } = require('./bookingPaymentSlips')
 const { deleteRenewalSlip } = require('./usageRenewalSlips')
 
@@ -22,6 +22,7 @@ async function collectShopFileRefs(poolOrClient, shopId) {
     renewalSlipFilenames: renewals.rows.map((row) => row.slip_filename).filter(Boolean),
     uiDir: path.join(getUiUploadRoot(), String(shopId)),
     chatDir: path.join(getChatUploadRoot(), String(shopId)),
+    bookingSiteDir: path.join(getBookingSiteUploadRoot(), String(shopId)),
   }
 }
 
@@ -41,6 +42,7 @@ async function purgeShopUploadFiles(refs) {
     renewal_slips: 0,
     ui_dir_removed: false,
     chat_dir_removed: false,
+    booking_site_dir_removed: false,
     errors: [],
   }
 
@@ -88,6 +90,18 @@ async function purgeShopUploadFiles(refs) {
       path: refs.chatDir,
       error: err.message,
     })
+  }
+
+  if (refs.bookingSiteDir) {
+    try {
+      summary.booking_site_dir_removed = await removeDirIfExists(refs.bookingSiteDir)
+    } catch (err) {
+      summary.errors.push({
+        type: 'booking-site-dir',
+        path: refs.bookingSiteDir,
+        error: err.message,
+      })
+    }
   }
 
   return summary

@@ -14,6 +14,7 @@ const {
 test('catalog defaults are enabled unless specified', () => {
   assert.equal(catalogDefaultEnabled('nav_reviews'), true)
   assert.equal(catalogDefaultEnabled('tab_bookings'), true)
+  assert.equal(catalogDefaultEnabled('feat_booking_site'), true)
 })
 
 test('locked tab_bookings stays enabled in resolved features', () => {
@@ -31,6 +32,14 @@ test('shop override disables feature', () => {
   )
   assert.equal(features.nav_chat, false)
   assert.equal(features.nav_reviews, true)
+})
+
+test('shop override disables booking site', () => {
+  const features = buildResolvedFeatures(
+    { [featureSettingKey('feat_booking_site')]: '0' },
+    {}
+  )
+  assert.equal(features.feat_booking_site, false)
 })
 
 test('template applies when shop has no override', () => {

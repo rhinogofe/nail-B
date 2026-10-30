@@ -1,7 +1,6 @@
 const { getPool } = require('../db/pool')
 const { isShopUsageExpired, enrichShopUsage } = require('../utils/shopUsageLimit')
-
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const { isShopSlugFormat, normalizeShopSlugParam } = require('../utils/shopSlug')
 
 const SHOP_SELECT = `
   id, slug, name, is_active, created_at, usage_limit_days, usage_started_at
@@ -12,14 +11,14 @@ function isAdminApiRequest(req) {
 }
 
 async function resolveShop(req, res, next) {
-  const slug = String(
+  const slug = normalizeShopSlugParam(
     req.headers['x-shop-slug']
     || req.params.shopSlug
     || req.query.shop
     || ''
-  ).trim().toLowerCase()
+  )
 
-  if (!slug || !SLUG_RE.test(slug)) {
+  if (!slug || !isShopSlugFormat(slug)) {
     return res.status(400).json({ error: 'ต้องระบุร้าน (X-Shop-Slug)' })
   }
 

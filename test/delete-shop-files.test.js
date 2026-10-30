@@ -25,6 +25,7 @@ test('collectShopFileRefs gathers slip filenames and upload dirs', async () => {
   assert.deepEqual(refs.renewalSlipFilenames, ['renewal-b.jpg'])
   assert.match(refs.uiDir, new RegExp(`${shopId.replace(/-/g, '\\-')}$`))
   assert.match(refs.chatDir, new RegExp(`${shopId.replace(/-/g, '\\-')}$`))
+  assert.match(refs.bookingSiteDir, new RegExp(`${shopId.replace(/-/g, '\\-')}$`))
 })
 
 test('purgeShopUploadFiles removes ui/chat dirs and slip files', async () => {

@@ -62,7 +62,7 @@ async function adminRequest(token, shop, method, path, { params, body } = {}) {
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
-      'X-Shop-Slug': shop,
+      'X-Shop-Slug': encodeURIComponent(shop),
     },
     body: body != null ? JSON.stringify(body) : undefined,
   })

@@ -1,0 +1,179 @@
+{
+  "site": {
+    "name": "Nail Studio",
+    "logoText": "NAILSTUDIO",
+    "logoSub": "",
+    "bookingUrl": "",
+    "bookingLabel": "จองคิว",
+    "newTab": false,
+    "address": "ที่อยู่ร้าน",
+    "phone": "02-000-0000",
+    "email": "hello@example.com"
+  },
+  "layoutVersion": 2,
+  "nav": [
+    { "section": "top", "label": "หน้าแรก", "show": true },
+    { "section": "rooms", "label": "บริการ", "show": true },
+    { "section": "news", "label": "รีวิว", "show": true },
+    { "section": "promo", "label": "โปรโมชั่น", "show": true },
+    { "section": "dining", "label": "บรรยากาศ", "show": false },
+    { "section": "about", "label": "ที่อยู่ร้าน", "show": true },
+    { "section": "book", "label": "จองเลย", "show": true },
+    { "section": "contact", "label": "ติดต่อ", "show": false }
+  ],
+  "roomsHeading": "บริการ",
+  "promosHeading": "โปรโมชั่น",
+  "theme": {
+    "bg": "#fbf4f1",
+    "ink": "#3a2428",
+    "mute": "#7a4e56",
+    "gold": "#c45c78",
+    "phFrom": "#e8b8c0",
+    "phTo": "#f3d9d4",
+    "heroText": "#3a2428",
+    "heroMute": "#7a4e56",
+    "heroAccent": "#c45c78",
+    "heroBtnBg": "#9b3354",
+    "heroBtnText": "#fff8f6",
+    "heroBarBg": "rgba(255,248,246,.88)",
+    "heroBarBorder": "#ead3d0",
+    "heroBarText": "#3a2428",
+    "heroBarBtnBg": "#9b3354",
+    "heroBarBtnText": "#fff8f6",
+    "heroBtnSize": "13px",
+    "roomTitle": "#3a2428",
+    "roomText": "#7a4e56",
+    "roomLink": "#a33d5c",
+    "serif": "\"Cormorant Garamond\",\"Georgia\",serif",
+    "sans": "\"Noto Sans Thai\",\"Helvetica Neue\",Arial,sans-serif",
+    "radius": "16px",
+    "heroOverlay": true,
+    "lightEnhance": true,
+    "darkEnhance": false,
+    "surface": "#fff8f6",
+    "line": "#ead3d0",
+    "border": "#ead3d0"
+  },
+  "hero": [
+    {
+      "tab": "หน้าแรก",
+      "title": "เล็บสวยแบบจองคิวได้",
+      "text": "ทาสีเจล เติมเล็บ และสปา ที่จัดคิวให้เรียบร้อยก่อนคุณมา",
+      "button": "จองคิว",
+      "link": "",
+      "showBooking": true,
+      "showImage": true,
+      "image": ""
+    },
+    {
+      "tab": "บริการ",
+      "title": "เลือกบริการ แล้วจองเวลา",
+      "text": "ดูรายการ ระยะเวลา และจองคิวได้ทันที ไม่ต้องรอคิวนานที่ร้าน",
+      "button": "จองคิว",
+      "link": "",
+      "showBooking": true,
+      "showImage": true,
+      "image": ""
+    },
+    {
+      "tab": "โปรโมชั่น",
+      "title": "จองวันนี้ รับโปรโมชั่น",
+      "text": "โปรโมชั่นพิเศษสำหรับการจองโดยตรงกับร้าน",
+      "button": "จองโปรโมชั่น",
+      "link": "",
+      "showBooking": true,
+      "showImage": true,
+      "image": ""
+    },
+    {
+      "tab": "รีวิว",
+      "title": "ผลงานจากลูกค้าที่จองคิว",
+      "text": "ดูรีวิวและรูปผลงานก่อนจอง นัดหมายได้ตามเวลาที่สะดวก",
+      "button": "จองคิว",
+      "link": "",
+      "showBooking": true,
+      "showImage": true,
+      "image": ""
+    }
+  ],
+  "about": {
+    "title": "ที่อยู่ร้าน",
+    "text": "เดินทางมาที่ร้านได้ตามที่อยู่ด้านล่าง จองคิวล่วงหน้าแล้วมาตามเวลาได้เลย",
+    "mapUrl": "",
+    "showMap": true,
+    "showImage": false,
+    "imageFirst": false,
+    "image": ""
+  },
+  "rooms": [
+    {
+      "name": "Classic Set",
+      "detail": "ทาสีเจล · ดูแลเล็บ · 60 นาที",
+      "showImage": true,
+      "image": "",
+      "link": "",
+      "type": "classic"
+    },
+    {
+      "name": "Signature Look",
+      "detail": "ลายพิเศษ · ประดับเพชร · 90 นาที",
+      "showImage": true,
+      "image": "",
+      "link": "",
+      "type": "signature"
+    },
+    {
+      "name": "Spa Hands",
+      "detail": "สปามือ · นวด · บำรุง",
+      "showImage": true,
+      "image": "",
+      "link": "",
+      "type": "spa-hands"
+    }
+  ],
+  "promos": [
+    {
+      "title": "จองวันนี้ ลดมัดจำ",
+      "text": "เงื่อนไขและช่วงเวลาโปรโมชั่นแสดงตรงนี้",
+      "showImage": true,
+      "image": "",
+      "link": ""
+    },
+    {
+      "title": "ลูกค้าใหม่ รับของแถม",
+      "text": "จองตรงกับร้านวันนี้",
+      "showImage": true,
+      "image": "",
+      "link": ""
+    }
+  ],
+  "dining": {
+    "title": "",
+    "text": "",
+    "showImage": false,
+    "image": ""
+  },
+  "newsHeading": "รีวิว",
+  "newsShowImage": false,
+  "newsImage": "",
+  "news": [
+    {
+      "date": "19 ต.ค. 2026",
+      "title": "หัวข้อข่าวตัวอย่างที่หนึ่ง",
+      "showImage": true,
+      "image": ""
+    },
+    {
+      "date": "12 ต.ค. 2026",
+      "title": "หัวข้อข่าวตัวอย่างที่สอง",
+      "showImage": true,
+      "image": ""
+    },
+    {
+      "date": "03 ต.ค. 2026",
+      "title": "หัวข้อข่าวตัวอย่างที่สาม",
+      "showImage": true,
+      "image": ""
+    }
+  ]
+}

@@ -3,27 +3,26 @@ const { setLinePushSettings, getLinePushSettings } = require('./linePushSettings
 const { isCentralLineBotEnabled, getCentralLineBotCredentials } = require('./lineBotMode')
 const { replyLineMessage } = require('./lineReply')
 
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-const RESERVED_SLUGS = new Set(['bookings', 'admin', 'login', 'profile', 'payment', 'reviews', 'api'])
+const { isCreatableShopSlug, normalizeShopSlugParam, SLUG_RE } = require('./shopSlug')
 
 function extractSlugFromMessage(text) {
   if (!text || typeof text !== 'string') return null
   const trimmed = text.trim()
 
-  const urlMatch = trimmed.match(/https?:\/\/[^\s/]+\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/|$)/i)
+  const urlMatch = trimmed.match(/https?:\/\/[^\s/]+\/([^\s/?#]+)(?:\/|$)/i)
   if (urlMatch) {
-    const slug = urlMatch[1].toLowerCase()
-    if (SLUG_RE.test(slug) && !RESERVED_SLUGS.has(slug)) return slug
+    const slug = normalizeShopSlugParam(urlMatch[1])
+    if (isCreatableShopSlug(slug)) return slug
   }
 
-  const pathMatch = trimmed.match(/^\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/bookings)?\/?$/i)
+  const pathMatch = trimmed.match(/^\/([^\s/?#]+)(?:\/bookings)?\/?$/i)
   if (pathMatch) {
-    const slug = pathMatch[1].toLowerCase()
-    if (SLUG_RE.test(slug) && !RESERVED_SLUGS.has(slug)) return slug
+    const slug = normalizeShopSlugParam(pathMatch[1])
+    if (isCreatableShopSlug(slug)) return slug
   }
 
-  const bare = trimmed.toLowerCase()
-  if (SLUG_RE.test(bare) && !RESERVED_SLUGS.has(bare)) return bare
+  const bare = normalizeShopSlugParam(trimmed)
+  if (isCreatableShopSlug(bare) && SLUG_RE.test(bare)) return bare
 
   return null
 }

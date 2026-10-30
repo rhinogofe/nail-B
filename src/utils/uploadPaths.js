@@ -16,9 +16,14 @@ function getChatUploadRoot() {
   return path.join(getUploadRoot(), 'chat')
 }
 
+function getBookingSiteUploadRoot() {
+  return path.join(getUploadRoot(), 'booking-site')
+}
+
 async function ensureUploadDirs() {
   await fs.mkdir(getUiUploadRoot(), { recursive: true })
   await fs.mkdir(getChatUploadRoot(), { recursive: true })
+  await fs.mkdir(getBookingSiteUploadRoot(), { recursive: true })
   await fs.mkdir(path.join(getUploadRoot(), 'renewal'), { recursive: true })
   await fs.mkdir(path.join(getUploadRoot(), 'booking-slips'), { recursive: true })
 }
@@ -65,6 +70,7 @@ module.exports = {
   getUploadRoot,
   getUiUploadRoot,
   getChatUploadRoot,
+  getBookingSiteUploadRoot,
   ensureUploadDirs,
   recordStorageMarker,
   getStorageMarker,

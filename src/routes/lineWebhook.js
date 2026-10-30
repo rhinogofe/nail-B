@@ -4,9 +4,9 @@ const { verifyLineSignature } = require('../utils/lineWebhookVerify')
 const { handleLineWebhookPayload } = require('../utils/lineWebhookHandler')
 const { isCentralLineBotEnabled, getCentralLineBotCredentials } = require('../utils/lineBotMode')
 const { getLinePushSettings } = require('../utils/linePushSettings')
+const { isShopSlugFormat, normalizeShopSlugParam } = require('../utils/shopSlug')
 
 const router = express.Router()
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 async function resolveWebhookSecret(shopSlug) {
   if (shopSlug) {
@@ -37,8 +37,8 @@ async function resolveWebhookSecret(shopSlug) {
 }
 
 async function handleWebhook(req, res, shopSlug = null) {
-  const normalizedSlug = shopSlug ? String(shopSlug).trim().toLowerCase() : null
-  if (normalizedSlug && !SLUG_RE.test(normalizedSlug)) {
+  const normalizedSlug = shopSlug ? normalizeShopSlugParam(shopSlug) : null
+  if (normalizedSlug && !isShopSlugFormat(normalizedSlug)) {
     return res.status(400).json({ error: 'Invalid shop slug' })
   }
 

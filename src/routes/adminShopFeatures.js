@@ -55,8 +55,7 @@ router.get('/shops', async (req, res) => {
     const result = await pool.query(
       `SELECT id, slug, name, is_active
        FROM shops
-       WHERE slug <> 'default'
-       ORDER BY is_active DESC, name ASC`
+       ORDER BY CASE WHEN slug = 'default' THEN 0 ELSE 1 END, is_active DESC, name ASC`
     )
     const shops = []
     for (const row of result.rows) {
@@ -78,7 +77,7 @@ router.get('/shops', async (req, res) => {
 router.get('/:slug', async (req, res) => {
   if (!requireSuperAdminDefault(req, res)) return
   const slug = String(req.params.slug || '').trim().toLowerCase()
-  if (!slug || slug === 'default') {
+  if (!slug) {
     return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
   }
   try {
@@ -106,7 +105,7 @@ router.get('/:slug', async (req, res) => {
 router.patch('/:slug', async (req, res) => {
   if (!requireSuperAdminDefault(req, res)) return
   const slug = String(req.params.slug || '').trim().toLowerCase()
-  if (!slug || slug === 'default') {
+  if (!slug) {
     return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
   }
   const partial = req.body?.features

@@ -5,6 +5,8 @@ const auth     = require('../middleware/authMiddleware')
 const { getPool } = require('../db/pool')
 const { getAdminShopInfo } = require('../utils/shopAdmins')
 const { createShopRecord } = require('../utils/createShopRecord')
+const { listShopPresets, getShopPreset } = require('../utils/shopPresets')
+const { normalizeShopSlugParam, isShopSlugFormat } = require('../utils/shopSlug')
 const { UI_KEYS } = require('../utils/shopUiSettings')
 const {
   isRegisterShopEnabled,
@@ -44,9 +46,8 @@ function redirectWithToken(res, user, shopSlug = 'default') {
 }
 
 function pickShopSlug(req) {
-  const raw = req.query?.state || req.query?.shop || ''
-  const slug = String(raw).trim().toLowerCase()
-  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ? slug : 'default'
+  const slug = normalizeShopSlugParam(req.query?.state || req.query?.shop || '')
+  return isShopSlugFormat(slug) ? slug : 'default'
 }
 
 function normalizeGmail(value) {
@@ -113,7 +114,7 @@ router.get('/register-shop/config', async (req, res) => {
   try {
     const pool = getPool()
     const enabled = await isRegisterShopEnabled(pool)
-    res.json({ enabled })
+    res.json({ enabled, presets: listShopPresets() })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -180,6 +181,8 @@ router.post('/register-shop', auth, async (req, res) => {
   const shopName = String(req.body?.shop_name || '').trim()
   const ui = req.body?.ui && typeof req.body.ui === 'object' ? req.body.ui : {}
   const registerPin = req.body?.register_pin
+  const presetKey = String(req.body?.preset || '').trim().toLowerCase()
+  const services = Array.isArray(req.body?.services) ? req.body.services : []
 
   const registerRequiredUiKeys = new Set([
     'ui_brand_main',
@@ -197,6 +200,9 @@ router.post('/register-shop', auth, async (req, res) => {
   })
   if (!shopName) {
     return res.status(400).json({ error: 'กรุณาระบุชื่อร้าน' })
+  }
+  if (!getShopPreset(presetKey)) {
+    return res.status(400).json({ error: 'กรุณาเลือกประเภทร้าน' })
   }
   if (missing.length) {
     return res.status(400).json({
@@ -227,7 +233,13 @@ router.post('/register-shop', auth, async (req, res) => {
     let shop
     try {
       await client.query('BEGIN')
-      shop = await createShopRecord(client, { slug, name: shopName, uiSettings: ui })
+      shop = await createShopRecord(client, {
+        slug,
+        name: shopName,
+        uiSettings: ui,
+        presetKey,
+        services,
+      })
 
       await client.query(
         `UPDATE users SET is_admin = true WHERE id = $1`,

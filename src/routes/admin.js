@@ -4553,4 +4553,6 @@ router.delete('/staff/:id', async (req, res) => {
   }
 })
 
+router.use(require('./adminBookingSite'))
+
 module.exports = router

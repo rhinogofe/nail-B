@@ -1,27 +1,27 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const {
+  slugifyShopName,
+  isCreatableShopSlug,
+  isShopSlugFormat,
+} = require('../src/utils/shopSlug')
 
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-
-function isValidShopSlug(slug) {
-  const s = String(slug || '').trim().toLowerCase()
-  if (!s || !SLUG_RE.test(s)) return false
-  if (s === 'default') return false
-  return true
-}
-
-test('shop slug regex accepts valid slugs', () => {
-  assert.equal(isValidShopSlug('nail-studio'), true)
-  assert.equal(isValidShopSlug('shop2'), true)
+test('slugify keeps Thai letters and numbers from the shop name', () => {
+  assert.equal(slugifyShopName('กอฟเทส1'), 'กอฟเทส1')
+  assert.equal(slugifyShopName('กอฟเทส 1!'), 'กอฟเทส-1')
+  assert.equal(slugifyShopName('Nail Studio'), 'nail-studio')
+  assert.equal(slugifyShopName('  Nail   Studio!!  '), 'nail-studio')
 })
 
-test('shop slug regex rejects invalid slugs', () => {
-  assert.equal(isValidShopSlug('default'), false)
-  assert.equal(isValidShopSlug('Bad Slug'), false)
-  assert.equal(isValidShopSlug('a--b'), false)
-  assert.equal(isValidShopSlug(''), false)
+test('slugify strips punctuation but keeps hyphens between words', () => {
+  assert.equal(slugifyShopName('ร้านเล็บ (สาขา 2)'), 'ร้านเล็บ-สาขา-2')
 })
 
-test('shop slug regex lowercases before validation', () => {
-  assert.equal(isValidShopSlug('Nail-Studio'), true)
+test('creatable slugs reject reserved and empty values', () => {
+  assert.equal(isCreatableShopSlug('กอฟเทส1'), true)
+  assert.equal(isCreatableShopSlug('nail-studio'), true)
+  assert.equal(isCreatableShopSlug('default'), false)
+  assert.equal(isCreatableShopSlug('admin'), false)
+  assert.equal(isCreatableShopSlug(''), false)
+  assert.equal(isShopSlugFormat('default'), true)
 })

@@ -5,6 +5,8 @@ const { getPool } = require('../db/pool')
 const { isSuperAdmin, demoteOrphanShopAdmins } = require('../utils/shopAdmins')
 const { collectShopFileRefs, purgeShopUploadFiles } = require('../utils/deleteShopFiles')
 const { createShopRecord } = require('../utils/createShopRecord')
+const { listShopPresets, getShopPreset } = require('../utils/shopPresets')
+const { isShopSlugFormat, normalizeShopSlugParam, slugifyShopName, isCreatableShopSlug } = require('../utils/shopSlug')
 const { getUiSettings, UI_DEFAULTS } = require('../utils/shopUiSettings')
 const { enrichShopUsage, parseUsageLimitDays } = require('../utils/shopUsageLimit')
 const {
@@ -13,10 +15,11 @@ const {
   buildShopBranding,
 } = require('../utils/shopIcon')
 const { resolvePublicApiBase } = require('../utils/publicApiBase')
+const { getBookingSiteContent } = require('../utils/bookingSite')
+const { isShopFeatureOn } = require('../utils/shopFeatureFlags')
+const { isAllowedFolder, isAllowedFilename, readFolderImage, mimeForFilename } = require('../utils/bookingSiteImages')
 
 const SHOP_RETURN = 'id, slug, name, is_active, created_at, usage_limit_days, usage_started_at'
-
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 function frontendBaseUrl() {
   return String(process.env.FRONTEND_URL || '').split(',')[0].trim().replace(/\/$/, '')
@@ -47,6 +50,10 @@ async function requireSuperAdminUser(req, res, next) {
   }
 }
 
+router.get('/presets', (_req, res) => {
+  res.json({ presets: listShopPresets() })
+})
+
 router.get('/', async (req, res) => {
   try {
     const pool = getPool()
@@ -66,8 +73,8 @@ router.get('/', async (req, res) => {
 })
 
 router.get('/:slug/share-preview', async (req, res) => {
-  const slug = req.params.slug.toLowerCase()
-  if (!SLUG_RE.test(slug)) {
+  const slug = normalizeShopSlugParam(req.params.slug)
+  if (!isShopSlugFormat(slug)) {
     return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
   }
 
@@ -98,8 +105,8 @@ router.get('/:slug/share-preview', async (req, res) => {
 })
 
 router.get('/:slug/branding', async (req, res) => {
-  const slug = req.params.slug.toLowerCase()
-  if (!SLUG_RE.test(slug)) {
+  const slug = normalizeShopSlugParam(req.params.slug)
+  if (!isShopSlugFormat(slug)) {
     return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
   }
 
@@ -123,9 +130,9 @@ router.get('/:slug/branding', async (req, res) => {
 })
 
 router.get('/:slug/icon/:size.png', async (req, res) => {
-  const slug = req.params.slug.toLowerCase()
+  const slug = normalizeShopSlugParam(req.params.slug)
   const size = parseIconSize(req.params.size)
-  if (!SLUG_RE.test(slug)) {
+  if (!isShopSlugFormat(slug)) {
     return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
   }
   if (!size) {
@@ -159,6 +166,76 @@ router.get('/:slug/icon/:size.png', async (req, res) => {
   }
 })
 
+router.get('/:slug/booking-site', async (req, res) => {
+  const slug = normalizeShopSlugParam(req.params.slug)
+  if (!isShopSlugFormat(slug)) {
+    return res.status(400).json({ error: 'slug ไม่ถูกต้อง' })
+  }
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT ${SHOP_RETURN} FROM shops WHERE slug = $1 AND is_active = true LIMIT 1`,
+      [slug]
+    )
+    const shop = enrichShopUsage(result.rows[0])
+    if (!shop) return res.status(404).json({ error: 'ไม่พบร้าน' })
+    if (shop.usage_expired) {
+      return res.status(403).json({
+        error: 'สาขานี้หมดระยะเวลาใช้งานแล้ว กรุณาติดต่อผู้ดูแลระบบ',
+        code: 'SHOP_USAGE_EXPIRED',
+      })
+    }
+    if (!(await isShopFeatureOn(pool, shop.id, 'feat_booking_site'))) {
+      return res.status(403).json({ error: 'สาขานี้ปิดเว็บไซต์ไว้', code: 'BOOKING_SITE_DISABLED' })
+    }
+    const content = await getBookingSiteContent(pool, shop)
+    let location = null
+    try {
+      const ui = await getUiSettings(pool, shop.id)
+      location = {
+        mapUrl: String(ui.ui_shop_map_url || '').trim(),
+        embedUrl: String(ui.ui_shop_map_embed_url || '').trim(),
+        addressDetail: String(ui.ui_shop_address_detail || '').trim(),
+        openMapsLabel: String(ui.ui_shop_open_maps_btn || '').trim(),
+      }
+    } catch (err) {
+      console.warn('[booking-site] location', err.message)
+    }
+    res.set('Cache-Control', 'private, no-store')
+    res.json({ ...content, location })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.get('/:slug/booking-site/images/:folder/:filename', async (req, res) => {
+  const slug = normalizeShopSlugParam(req.params.slug)
+  const folder = String(req.params.folder || '')
+  const filename = String(req.params.filename || '')
+  if (!isShopSlugFormat(slug) || !isAllowedFolder(folder) || !isAllowedFilename(filename)) {
+    return res.status(404).json({ error: 'ไม่พบรูป' })
+  }
+  try {
+    const pool = getPool()
+    const result = await pool.query(
+      `SELECT id, slug, is_active FROM shops WHERE slug = $1 LIMIT 1`,
+      [slug]
+    )
+    const shop = result.rows[0]
+    if (!shop || !shop.is_active) return res.status(404).json({ error: 'ไม่พบรูป' })
+    if (!(await isShopFeatureOn(pool, shop.id, 'feat_booking_site'))) {
+      return res.status(404).json({ error: 'ไม่พบรูป' })
+    }
+    const buffer = await readFolderImage(shop.id, folder, filename)
+    if (!buffer) return res.status(404).json({ error: 'ไม่พบรูป' })
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.type(mimeForFilename(filename))
+    res.send(buffer)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 router.get('/:slug', async (req, res) => {
   try {
     const pool = getPool()
@@ -167,7 +244,7 @@ router.get('/:slug', async (req, res) => {
        FROM shops
        WHERE slug = $1 AND is_active = true
        LIMIT 1`,
-      [req.params.slug.toLowerCase()]
+      [normalizeShopSlugParam(req.params.slug)]
     )
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'ไม่พบร้าน' })
@@ -180,14 +257,21 @@ router.get('/:slug', async (req, res) => {
 
 router.post('/', auth, admin, requireSuperAdminUser, async (req, res) => {
   const name = String(req.body?.name || '').trim()
-  const slug = String(req.body?.slug || '').trim().toLowerCase()
+  const slug = slugifyShopName(req.body?.slug || req.body?.name || '')
 
   if (!name) return res.status(400).json({ error: 'ต้องระบุชื่อร้าน' })
-  if (!slug || !SLUG_RE.test(slug)) {
-    return res.status(400).json({ error: 'slug ใช้ได้เฉพาะ a-z, 0-9 และ -' })
+  if (!slug || !isShopSlugFormat(slug)) {
+    return res.status(400).json({ error: 'slug ใช้ได้เฉพาะตัวอักษร ตัวเลข และ -' })
+  }
+  if (!isCreatableShopSlug(slug)) {
+    return res.status(400).json({ error: 'ไม่สามารถใช้ slug นี้ได้' })
   }
 
   const usageLimitDays = parseUsageLimitDays(req.body?.usage_limit_days)
+  const presetKey = String(req.body?.preset || '').trim().toLowerCase()
+  if (presetKey && !getShopPreset(presetKey)) {
+    return res.status(400).json({ error: 'ไม่พบเทมเพลตร้านนี้' })
+  }
 
   try {
     const pool = getPool()
@@ -195,7 +279,12 @@ router.post('/', auth, admin, requireSuperAdminUser, async (req, res) => {
     let shop
     try {
       await client.query('BEGIN')
-      shop = await createShopRecord(client, { slug, name, usageLimitDays })
+      shop = await createShopRecord(client, {
+        slug,
+        name,
+        usageLimitDays,
+        presetKey: presetKey || null,
+      })
       await client.query('COMMIT')
     } catch (err) {
       await client.query('ROLLBACK')
@@ -208,12 +297,13 @@ router.post('/', auth, admin, requireSuperAdminUser, async (req, res) => {
     if (err.code === '23505') {
       return res.status(409).json({ error: 'slug นี้ถูกใช้แล้ว' })
     }
+    if (err.status) return res.status(err.status).json({ error: err.message })
     res.status(500).json({ error: err.message })
   }
 })
 
 router.patch('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => {
-  const slug = req.params.slug.toLowerCase()
+  const slug = normalizeShopSlugParam(req.params.slug)
   const name = req.body?.name != null ? String(req.body.name).trim() : null
   const isActive = req.body?.is_active
   const hasUsageLimit = Object.prototype.hasOwnProperty.call(req.body || {}, 'usage_limit_days')
@@ -267,7 +357,7 @@ router.patch('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => {
 })
 
 router.delete('/:slug', auth, admin, requireSuperAdminUser, async (req, res) => {
-  const slug = req.params.slug.toLowerCase()
+  const slug = normalizeShopSlugParam(req.params.slug)
   if (slug === 'default') {
     return res.status(400).json({ error: 'ไม่สามารถลบร้าน default ได้' })
   }

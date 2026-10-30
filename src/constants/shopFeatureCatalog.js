@@ -119,6 +119,12 @@ const SHOP_FEATURE_CATALOG = [
         default: true,
         configNote: 'ปิดแล้วซ่อนแท็บช่าง หน้าจองไม่ต้องเลือกช่าง และคิวใช้เวลาร่วมทั้งร้าน',
       },
+      {
+        key: 'feat_booking_site',
+        label: 'เว็บไซต์สาขา',
+        default: true,
+        configNote: 'ปิดแล้วซ่อนปุ่มแก้ไข/แชร์ลิงก์เว็บไซต์ และปิดหน้า /ชื่อสาขา/booking-site ของสาขานั้น',
+      },
     ],
   },
 ]

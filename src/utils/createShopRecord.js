@@ -2,6 +2,8 @@ const { ensureShopSettings } = require('./shopSettings')
 const { ensureUiSettings, setUiSettings } = require('./shopUiSettings')
 const { applyDefaultFeaturesToNewShop } = require('./shopFeatureFlags')
 const { computeBookUntilDate, todayYmdBangkok } = require('./bookingWindow')
+const { applyShopPreset } = require('./shopPresets')
+const { slugifyShopName, isCreatableShopSlug, isShopSlugFormat, SLUG_RE } = require('./shopSlug')
 
 const DEFAULT_SETTINGS = {
   deposit_amount: '300',
@@ -25,10 +27,15 @@ const DEFAULT_SETTINGS = {
   coupon_manual_completion_points: 'false',
 }
 
-const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-
-async function createShopRecord(client, { slug, name, uiSettings = null, usageLimitDays = null }) {
-  const shopSlug = String(slug || '').trim().toLowerCase()
+async function createShopRecord(client, {
+  slug,
+  name,
+  uiSettings = null,
+  usageLimitDays = null,
+  presetKey = null,
+  services = null,
+}) {
+  const shopSlug = slugifyShopName(slug)
   const shopName = String(name || '').trim()
 
   if (!shopName) {
@@ -36,12 +43,12 @@ async function createShopRecord(client, { slug, name, uiSettings = null, usageLi
     err.status = 400
     throw err
   }
-  if (!shopSlug || !SLUG_RE.test(shopSlug)) {
-    const err = new Error('slug ใช้ได้เฉพาะ a-z, 0-9 และ -')
+  if (!shopSlug || !isShopSlugFormat(shopSlug)) {
+    const err = new Error('slug ใช้ได้เฉพาะตัวอักษร ตัวเลข และ -')
     err.status = 400
     throw err
   }
-  if (shopSlug === 'default') {
+  if (!isCreatableShopSlug(shopSlug)) {
     const err = new Error('ไม่สามารถใช้ slug นี้ได้')
     err.status = 400
     throw err
@@ -74,6 +81,7 @@ async function createShopRecord(client, { slug, name, uiSettings = null, usageLi
   if (uiSettings && Object.keys(uiSettings).length) {
     await setUiSettings(client, shop.id, uiSettings)
   }
+  await applyShopPreset(client, shop, { presetKey, services })
 
   return shop
 }
