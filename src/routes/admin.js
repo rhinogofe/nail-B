@@ -92,6 +92,7 @@ const {
   getRegisterShopPin,
   setRegisterShopPin,
   isValidPin,
+  normalizeRegisterPhone,
 } = require('../utils/registerShopPin')
 
 router.use(resolveShop)
@@ -2677,6 +2678,7 @@ router.get('/users', async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200)
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
     const q = String(req.query.q || '').trim()
+    const bookingLookup = req.query.lookup === 'booking'
 
     const params = [shopId]
     const filters = []
@@ -2689,7 +2691,7 @@ router.get('/users', async (req, res) => {
     }
 
     if (!showAllUsers) {
-      filters.push(`(
+      const scopeFilter = `(
         EXISTS (
           SELECT 1 FROM shop_admins sa_scope
           WHERE sa_scope.user_id = u.id AND sa_scope.shop_id = $1
@@ -2698,16 +2700,37 @@ router.get('/users', async (req, res) => {
           SELECT 1 FROM bookings b_scope
           WHERE b_scope.user_id = u.id AND b_scope.shop_id = $1
         )
-      )`)
+      )`
+      const lookupPhone = normalizeRegisterPhone(q)
+      if (bookingLookup && q) {
+        // Customers are global; a branch may book someone new only by their exact phone/email, not browse everyone.
+        params.push(q.toLowerCase())
+        const exactParam = `$${params.length}`
+        params.push(/^0\d{9}$/.test(lookupPhone) ? lookupPhone : '')
+        const phoneParam = `$${params.length}`
+        filters.push(`(
+          ${scopeFilter}
+          OR LOWER(COALESCE(u.email, '')) = ${exactParam}
+          OR LOWER(COALESCE(u.gmail, '')) = ${exactParam}
+          OR (${phoneParam} <> '' AND u.provider = 'phone' AND u.provider_id = ${phoneParam})
+        )`)
+      } else {
+        filters.push(scopeFilter)
+      }
     }
 
     if (q) {
       params.push(`%${q}%`)
       const searchParam = `$${params.length}`
+      const phoneDigits = q.replace(/\D/g, '')
+      params.push(phoneDigits.length >= 3 ? `%${phoneDigits}%` : `%${q}%`)
+      const phoneSearchParam = `$${params.length}`
       filters.push(`(
         u.name ILIKE ${searchParam}
         OR COALESCE(u.email, '') ILIKE ${searchParam}
+        OR COALESCE(u.gmail, '') ILIKE ${searchParam}
         OR COALESCE(u.provider_id, '') ILIKE ${searchParam}
+        OR COALESCE(u.provider_id, '') ILIKE ${phoneSearchParam}
       )`)
     }
 
